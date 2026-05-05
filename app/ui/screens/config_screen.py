@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import tempfile
 import threading
 from collections.abc import Callable
 from datetime import datetime
-from urllib import error, request
 
 import customtkinter as ctk
 
+from app.ai import LLMClient
+from app.security.credential_store import CredentialStore
 from app.ui import tokens
+from app.video.remotion_handoff import TTSGenerator
 
 MODEL_CREDENTIAL_ID = "tao-video-bao-cao/model/default"
 TTS_CREDENTIAL_ID = "tao-video-bao-cao/tts/default"
@@ -24,6 +27,7 @@ class ConfigScreen(ctk.CTkFrame):
         self.has_saved_keys = False
         self.model_key_visible = False
         self.tts_key_visible = False
+        self.credential_store = CredentialStore()
         self.grid_columnconfigure(0, weight=7, uniform="config_columns")
         self.grid_columnconfigure(1, weight=3, uniform="config_columns")
         self.grid_rowconfigure(0, weight=1)
@@ -200,6 +204,22 @@ class ConfigScreen(ctk.CTkFrame):
         if not self.validate_config():
             self.save_status_value.configure(text="Cấu hình chưa hợp lệ", text_color=tokens.COLOR_ERROR)
             return
+        model_key = self.apikey_model_entry.get().strip()
+        tts_key = self.apikey_tts_entry.get().strip()
+        existing_model_key = self.credential_store.retrieve(MODEL_CREDENTIAL_ID)
+        existing_tts_key = self.credential_store.retrieve(TTS_CREDENTIAL_ID)
+        if model_key:
+            self.credential_store.store(MODEL_CREDENTIAL_ID, model_key)
+        if tts_key:
+            self.credential_store.store(TTS_CREDENTIAL_ID, tts_key)
+        if not model_key and not existing_model_key:
+            self.apikey_model_error.configure(text="API key model không được rỗng khi chưa có key đã lưu.")
+            self.save_status_value.configure(text="Cấu hình chưa hợp lệ", text_color=tokens.COLOR_ERROR)
+            return
+        if not tts_key and not existing_tts_key:
+            self.apikey_tts_error.configure(text="API key TTS không được rỗng khi chưa có key đã lưu.")
+            self.save_status_value.configure(text="Cấu hình chưa hợp lệ", text_color=tokens.COLOR_ERROR)
+            return
         self._set_readonly_value(self.credential_id_model_entry, MODEL_CREDENTIAL_ID)
         self._set_readonly_value(self.credential_id_tts_entry, TTS_CREDENTIAL_ID)
         self._clear_entry(self.apikey_model_entry)
@@ -212,7 +232,7 @@ class ConfigScreen(ctk.CTkFrame):
         self.toggle_tts_key_button.configure(text="Hiện")
         self.has_saved_keys = True
         self.save_status_value.configure(text="Đã lưu cấu hình", text_color=tokens.COLOR_SUCCESS)
-        self.secret_storage_value.configure(text="Windows Credential Manager (mock secure storage)")
+        self.secret_storage_value.configure(text=self.credential_store.get_backend_name())
         self._sync_key_buttons()
         if self.on_config_saved is not None:
             self.on_config_saved()
@@ -231,7 +251,7 @@ class ConfigScreen(ctk.CTkFrame):
         self._set_readonly_value(self.credential_id_model_entry, "")
         self._set_readonly_value(self.credential_id_tts_entry, "")
         self.enable_resume_var.set(True)
-        self.mock_ai_mode_var.set(False)
+        self.mock_ai_mode_var.set(True)
         self.has_saved_keys = False
         self.model_key_visible = False
         self.tts_key_visible = False
@@ -248,38 +268,42 @@ class ConfigScreen(ctk.CTkFrame):
         self._sync_key_buttons()
 
     def test_llm(self) -> None:
-        self._start_connection_test("llm", self.url_model_entry.get().strip(), self.llm_result_value, self.test_llm_button)
+        self._start_connection_test("llm", self.llm_result_value, self.test_llm_button)
 
     def test_tts(self) -> None:
-        self._start_connection_test("tts", self.url_tts_entry.get().strip(), self.tts_result_value, self.test_tts_button)
+        self._start_connection_test("tts", self.tts_result_value, self.test_tts_button)
 
-    def _start_connection_test(self, kind: str, url: str, result_label: ctk.CTkLabel, button: ctk.CTkButton) -> None:
+    def _start_connection_test(self, kind: str, result_label: ctk.CTkLabel, button: ctk.CTkButton) -> None:
         if self.mock_ai_mode_var.get():
             result_label.configure(text="Mock test: OK", text_color=tokens.COLOR_SUCCESS)
             self.last_test_time_value.configure(text=self._now_text())
             return
-        if not url:
-            result_label.configure(text="Chưa nhập URL", text_color=tokens.COLOR_ERROR)
-            self.last_test_time_value.configure(text=self._now_text())
-            return
-        if not url.startswith(("http://", "https://")):
-            result_label.configure(text="URL không hợp lệ", text_color=tokens.COLOR_ERROR)
+        validation_message = self._validate_connection_fields(kind)
+        if validation_message:
+            result_label.configure(text=validation_message, text_color=tokens.COLOR_ERROR)
             self.last_test_time_value.configure(text=self._now_text())
             return
         result_label.configure(text="Đang kiểm tra kết nối...", text_color=tokens.COLOR_WARNING)
         button.configure(state="disabled")
-        threading.Thread(target=self._run_connection_test, args=(kind, url, result_label, button), daemon=True).start()
+        threading.Thread(target=self._run_connection_test, args=(kind, result_label, button), daemon=True).start()
 
-    def _run_connection_test(self, kind: str, url: str, result_label: ctk.CTkLabel, button: ctk.CTkButton) -> None:
-        try:
-            req = request.Request(url, method="GET", headers={"User-Agent": "tao-video-bao-cao-giao-ban/desktop"})
-            with request.urlopen(req, timeout=5) as response:
-                ok = 200 <= response.status < 500
-                message = f"Kết nối OK (HTTP {response.status})" if ok else f"Lỗi HTTP {response.status}"
-                color = tokens.COLOR_SUCCESS if ok else tokens.COLOR_ERROR
-        except (error.URLError, TimeoutError, ValueError, OSError) as exc:
-            message = f"Lỗi kết nối: {exc.__class__.__name__}"
-            color = tokens.COLOR_ERROR
+    def _run_connection_test(self, kind: str, result_label: ctk.CTkLabel, button: ctk.CTkButton) -> None:
+        if kind == "llm":
+            ok, message = LLMClient(
+                self.url_model_entry.get().strip(),
+                self._current_secret(self.apikey_model_entry, MODEL_CREDENTIAL_ID),
+                self.default_model_entry.get().strip(),
+            ).test_connection()
+        else:
+            ok, message = TTSGenerator(
+                tempfile.mkdtemp(prefix="tao-video-tts-test-"),
+                tts_url=self.url_tts_entry.get().strip(),
+                tts_api_key=self._current_secret(self.apikey_tts_entry, TTS_CREDENTIAL_ID),
+                tts_model=self.model_tts_entry.get().strip(),
+                mock_mode=False,
+                timeout=20.0,
+            ).test_connection()
+        color = tokens.COLOR_SUCCESS if ok else tokens.COLOR_ERROR
         self.after(0, lambda: self._finish_connection_test(result_label, button, message, color))
 
     def _finish_connection_test(self, result_label: ctk.CTkLabel, button: ctk.CTkButton, message: str, color: str) -> None:
@@ -295,6 +319,8 @@ class ConfigScreen(ctk.CTkFrame):
         self.save_status_value.configure(text="Sẵn sàng thay key", text_color=tokens.COLOR_WARNING)
 
     def delete_keys(self) -> None:
+        self.credential_store.delete(MODEL_CREDENTIAL_ID)
+        self.credential_store.delete(TTS_CREDENTIAL_ID)
         self._set_readonly_value(self.credential_id_model_entry, "")
         self._set_readonly_value(self.credential_id_tts_entry, "")
         self._clear_entry(self.apikey_model_entry)
@@ -302,6 +328,71 @@ class ConfigScreen(ctk.CTkFrame):
         self.has_saved_keys = False
         self.save_status_value.configure(text="Đã xóa key khỏi máy này", text_color=tokens.COLOR_WARNING)
         self._sync_key_buttons()
+
+    def get_config(self) -> dict[str, object]:
+        """Trả cấu hình runtime hiện tại để app shell truyền cho job."""
+        return {
+            "llm": {
+                "url_model": self.url_model_entry.get().strip(),
+                "default_model": self.default_model_entry.get().strip(),
+                "api_key": self._current_secret(self.apikey_model_entry, MODEL_CREDENTIAL_ID),
+                "credential_id_model": MODEL_CREDENTIAL_ID if self.has_saved_keys else "",
+            },
+            "tts": {
+                "url_tts": self.url_tts_entry.get().strip(),
+                "model_tts": self.model_tts_entry.get().strip(),
+                "voice": self.voice_entry.get().strip(),
+                "api_key": self._current_secret(self.apikey_tts_entry, TTS_CREDENTIAL_ID),
+                "credential_id_tts": TTS_CREDENTIAL_ID if self.has_saved_keys else "",
+            },
+            "runtime_policy": {
+                "step_timeout_seconds": self._int_or_default(self.step_timeout_seconds_entry.get(), 600),
+                "max_retry": self._int_or_default(self.max_retry_entry.get(), 3),
+                "retry_backoff_seconds": self._int_or_default(self.retry_backoff_seconds_entry.get(), 30),
+                "enable_resume": self.enable_resume_var.get(),
+                "mock_ai_mode": self.mock_ai_mode_var.get(),
+            },
+        }
+
+    def is_config_ready(self) -> tuple[bool, bool]:
+        config = self.get_config()
+        llm = config["llm"]
+        tts = config["tts"]
+        mock_mode = bool(config["runtime_policy"]["mock_ai_mode"])
+        llm_ready = mock_mode or bool(llm["url_model"] and llm["default_model"] and llm["api_key"])
+        tts_ready = mock_mode or bool(tts["url_tts"] and tts["model_tts"] and tts["api_key"])
+        return llm_ready, tts_ready
+
+    def _validate_connection_fields(self, kind: str) -> str:
+        if kind == "llm":
+            url = self.url_model_entry.get().strip()
+            model = self.default_model_entry.get().strip()
+            secret = self._current_secret(self.apikey_model_entry, MODEL_CREDENTIAL_ID)
+            label = "LLM"
+        else:
+            url = self.url_tts_entry.get().strip()
+            model = self.model_tts_entry.get().strip()
+            secret = self._current_secret(self.apikey_tts_entry, TTS_CREDENTIAL_ID)
+            label = "TTS"
+        if not url:
+            return f"Chưa nhập URL {label}"
+        if not url.startswith(("http://", "https://")):
+            return "URL không hợp lệ"
+        if not model:
+            return f"Chưa nhập model {label}"
+        if not secret:
+            return f"Chưa nhập API key {label}"
+        return ""
+
+    def _current_secret(self, entry: ctk.CTkEntry, credential_id: str) -> str:
+        return entry.get().strip() or self.credential_store.retrieve(credential_id) or ""
+
+    def _int_or_default(self, value: str, default: int) -> int:
+        try:
+            parsed = int(value)
+            return parsed if parsed > 0 else default
+        except ValueError:
+            return default
 
     def _sync_key_buttons(self) -> None:
         if hasattr(self, "change_key_button"):

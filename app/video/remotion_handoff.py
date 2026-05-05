@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
+import subprocess
 from datetime import datetime, timezone
-from typing import Optional
+from pathlib import Path
+from typing import Any
+
+import httpx
 
 
 class RemotionManifest:
@@ -22,7 +27,7 @@ class RemotionManifest:
         render_plan: dict,
         tts_manifest: dict,
     ) -> dict:
-        """Tạo manifest cuối cùng cho Remotion."""
+        """Tạo manifest cuối cùng để renderer biết scene/component/timing/audio."""
         scenes = workflow_data.get("scenes", [])
         manifest = {
             "version": "1.0",
@@ -86,12 +91,14 @@ class TTSGenerator:
         tts_api_key: str = "",
         tts_model: str = "",
         mock_mode: bool = True,
+        timeout: float = 120.0,
     ):
         self.output_dir = output_dir
-        self.tts_url = tts_url
+        self.tts_url = tts_url.rstrip("/")
         self.tts_api_key = tts_api_key
         self.tts_model = tts_model
         self.mock_mode = mock_mode
+        self.timeout = timeout
 
     def generate_all(self, scenes: list[dict]) -> dict:
         """Tạo TTS cho tất cả scene có tts.enabled=true.
@@ -125,8 +132,7 @@ class TTSGenerator:
         os.makedirs(tts_dir, exist_ok=True)
 
         audio_path = os.path.join(tts_dir, f"{scene_id}.mp3")
-        word_count = len(text.split())
-        duration = max(2.0, word_count / 2.5)
+        duration = self._estimate_duration_seconds(text)
 
         with open(audio_path, "wb") as file:
             file.write(b"")
@@ -134,14 +140,103 @@ class TTSGenerator:
         return {"audio_path": f"tts/{scene_id}.mp3", "duration_seconds": round(duration, 1)}
 
     def _generate_real(self, scene_id: str, text: str, voice: str) -> dict:
-        """Gọi TTS API thật (placeholder cho tương lai)."""
-        raise NotImplementedError("Real TTS generation chưa được implement. Dùng mock_mode=True.")
+        """Gọi TTS API thật theo kiểu OpenAI-compatible hoặc JSON/base64 phổ biến."""
+        if not self.tts_url or not self.tts_api_key:
+            raise ValueError("Thiếu URL hoặc API key TTS để tạo audio thật")
+
+        tts_dir = Path(self.output_dir) / "tts"
+        tts_dir.mkdir(parents=True, exist_ok=True)
+        audio_file = tts_dir / f"{scene_id}.mp3"
+        endpoint = self._speech_endpoint()
+        payload = {
+            "model": self.tts_model or "tts-1",
+            "input": text,
+            "voice": voice or "alloy",
+            "response_format": "mp3",
+        }
+        headers = {"Authorization": f"Bearer {self.tts_api_key}", "Content-Type": "application/json"}
+
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(endpoint, headers=headers, json=payload)
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "").lower()
+            if "application/json" in content_type:
+                self._write_audio_from_json(audio_file, response.json())
+            else:
+                audio_file.write_bytes(response.content)
+
+        duration = self.probe_audio_duration(str(audio_file)) or self._estimate_duration_seconds(text)
+        return {"audio_path": f"tts/{scene_id}.mp3", "duration_seconds": round(duration, 1)}
+
+    def _speech_endpoint(self) -> str:
+        if self.tts_url.endswith("/audio/speech") or self.tts_url.endswith("/tts"):
+            return self.tts_url
+        return self.tts_url + "/audio/speech"
+
+    def _write_audio_from_json(self, audio_file: Path, data: dict[str, Any]) -> None:
+        audio_b64 = data.get("audio") or data.get("audio_base64") or data.get("data")
+        if isinstance(audio_b64, str):
+            audio_file.write_bytes(base64.b64decode(audio_b64))
+            return
+        audio_url = data.get("audio_url") or data.get("url")
+        if isinstance(audio_url, str):
+            headers = {"Authorization": f"Bearer {self.tts_api_key}"}
+            with httpx.Client(timeout=self.timeout) as client:
+                audio_response = client.get(audio_url, headers=headers)
+                audio_response.raise_for_status()
+                audio_file.write_bytes(audio_response.content)
+            return
+        raise ValueError("TTS API trả JSON nhưng không có audio/audio_base64/audio_url")
 
     def probe_audio_duration(self, audio_path: str) -> float:
-        """Đo duration audio file. Mock mode trả ước tính."""
+        """Đo duration audio bằng ffprobe nếu có; fallback trả 0 để caller ước tính."""
         if self.mock_mode:
             return 5.0
-        raise NotImplementedError("Real audio probe chưa được implement.")
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    audio_path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if result.returncode == 0:
+                return float(result.stdout.strip())
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return 0.0
+        return 0.0
+
+    def test_connection(self) -> tuple[bool, str]:
+        """Gọi TTS thật bằng câu ngắn để kiểm tra endpoint."""
+        if self.mock_mode:
+            return True, "Mock test: OK"
+        try:
+            result = self._generate_real("healthcheck", "Kiểm tra kết nối TTS.", "")
+            path = Path(self.output_dir) / str(result["audio_path"])
+            if path.exists():
+                path.unlink(missing_ok=True)
+            return True, f"Kết nối thành công! Model: {self.tts_model or 'tts-1'}"
+        except httpx.TimeoutException:
+            return False, "Không kết nối được: timeout khi gọi TTS API"
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:300] if exc.response is not None else str(exc)
+            return False, f"Không kết nối được: HTTP {exc.response.status_code} - {detail}"
+        except Exception as exc:  # noqa: BLE001 - hiển thị lỗi cụ thể cho UI
+            return False, f"Không kết nối được: {exc}"
+
+    @staticmethod
+    def _estimate_duration_seconds(text: str) -> float:
+        word_count = len(text.split())
+        return max(2.0, word_count / 2.5)
 
 
 class RenderGate:
@@ -214,7 +309,7 @@ class FinalPackager:
         return publish
 
     def create_mock_video(self) -> str:
-        """Tạo file video MP4 mock placeholder."""
+        """Tạo file video MP4 mock placeholder cho mock/dev mode."""
         final_dir = os.path.join(self.output_dir, "final")
         os.makedirs(final_dir, exist_ok=True)
         video_path = os.path.join(final_dir, "video.mp4")

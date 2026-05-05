@@ -34,3 +34,14 @@ tests/
 ## GitHub Issues
 
 Theo dõi tiến độ tại: https://github.com/ngapngap/tao-video-bao-cao-giao-ban/issues
+
+## Kiểm thử AI thật
+
+1. Mở màn hình `Cấu hình`.
+2. Tắt `Chế độ AI mock`.
+3. Nhập URL OpenAI-compatible, model và API key cho LLM.
+4. Nhập URL/model/key cho TTS. Endpoint TTS mặc định được gọi theo dạng `/audio/speech` nếu URL chưa trỏ trực tiếp tới `/audio/speech` hoặc `/tts`.
+5. Bấm `Kiểm tra LLM` và `Kiểm tra TTS`; khi thành công UI hiển thị `Kết nối thành công! Model: ...`.
+6. Lưu cấu hình, chọn PDF ở màn hình `Tạo video`, rồi chạy job. Pipeline sẽ gọi LLM thật cho P1.1/P1.2 và S2.1-S2.8; TTS sẽ tạo audio thật trong `outputs/YYYYMM/<job_id>/tts/`.
+
+Nếu muốn chạy không tốn API hoặc thiếu cấu hình thật, bật lại `Chế độ AI mock`; mock mode vẫn sinh đủ artifact fallback để smoke test local.
