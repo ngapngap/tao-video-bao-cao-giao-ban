@@ -177,6 +177,7 @@ class JobLogsScreen(ctk.CTkFrame):
         self.job_state = job_state
         self.output_dir = output_dir
         self._refresh_all()
+        self._schedule_realtime_refresh()
 
     def cancel_job(self) -> None:
         if self.on_cancel_job is not None:
@@ -186,11 +187,34 @@ class JobLogsScreen(ctk.CTkFrame):
             self._refresh_all()
 
     def _refresh_all(self) -> None:
+        self._load_latest_job_state_from_disk()
         self._refresh_header()
         self._refresh_timeline()
         self._refresh_logs()
         self._refresh_artifacts()
         self._refresh_state_json()
+
+    def _schedule_realtime_refresh(self) -> None:
+        if self.job_state is None:
+            return
+        if self.job_state.status not in {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.WAITING_RETRY}:
+            return
+        self.after(1000, self._poll_realtime_state)
+
+    def _poll_realtime_state(self) -> None:
+        if self.job_state is None:
+            return
+        self._refresh_all()
+        self._schedule_realtime_refresh()
+
+    def _load_latest_job_state_from_disk(self) -> None:
+        state_path = Path(self.output_dir) / "job_state.json"
+        if not state_path.exists():
+            return
+        try:
+            self.job_state = JobState.model_validate(json.loads(state_path.read_text(encoding="utf-8")))
+        except Exception:
+            return
 
     def _refresh_header(self) -> None:
         if self.job_state is None:
