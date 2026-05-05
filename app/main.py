@@ -579,13 +579,13 @@ class App(ctk.CTk):
 
     def _llm_chat(self, system_prompt: str, input_payload: dict[str, Any], step_id: str, logger: EventLogger, job_id: str) -> dict[str, Any]:
         try:
-            result = self._llm_client().chat(system_prompt, json.dumps(input_payload, ensure_ascii=False))
+            result = self._llm_client().chat_with_retry_parse(system_prompt, json.dumps(input_payload, ensure_ascii=False))
             if not isinstance(result, dict):
                 raise ValueError("LLM output phải là JSON object")
             return result
         except Exception as exc:
             safe_message = mask_sensitive_text(str(exc))
-            logger.log("ERROR", step_id, f"[{step_id}] LLM call failed: {safe_message}", job_id)
+            logger.log("ERROR", step_id, f"[{step_id}] LLM call/parse failed: {safe_message}", job_id)
             raise
 
     def _llm_video_step(self, step_id: str, input_payload: dict[str, Any], logger: EventLogger, job_state: JobState) -> dict[str, Any]:
