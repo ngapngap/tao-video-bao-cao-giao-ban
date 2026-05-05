@@ -1,0 +1,72 @@
+# Local agent/planning files - keep out of GitHub
+noidung.md
+AGENTS.md
+AGENT.md
+.agent/
+plans/
+PROJECT_PLAN.md
+UI_UX_*.md
+UI_Wireframes.md
+
+# Local reference docs generated for planning/design
+# Keep codebase clean on GitHub; move runtime docs into tracked README later if needed.
+docs/
+design-system/
+
+# Runtime outputs and local app data
+outputs/
+configs/
+logs/
+*.log
+*.ndjson
+job_state.json
+
+# Secrets and environment files
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.pfx
+*.p12
+secrets/
+credentials/
+
+# Python cache/build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.spec
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging/release local artifacts
+release/
+*.zip
+*.7z
+*.exe
+*.msi
+
+# OS/editor local files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Node/Remotion artifacts if introduced later
+node_modules/
+.next/
+out/
+.cache/
+.remotion/
