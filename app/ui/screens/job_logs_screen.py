@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections.abc import Callable
@@ -42,6 +43,52 @@ PHASES = {
 }
 
 
+class ChangeDetector:
+    """Detect file changes bằng last-modified time + content hash."""
+
+    def __init__(self) -> None:
+        self._file_mtimes: dict[str, float] = {}
+        self._file_hashes: dict[str, str] = {}
+
+    def has_changed(self, file_path: str) -> bool:
+        """Check nếu file đã thay đổi kể từ lần check cuối."""
+        if not os.path.exists(file_path):
+            return False
+
+        mtime = os.path.getmtime(file_path)
+        if file_path in self._file_mtimes and self._file_mtimes[file_path] == mtime:
+            return False
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            content_hash = hashlib.md5(content.encode()).hexdigest()
+
+            if file_path in self._file_hashes and self._file_hashes[file_path] == content_hash:
+                self._file_mtimes[file_path] = mtime
+                return False
+
+            self._file_mtimes[file_path] = mtime
+            self._file_hashes[file_path] = content_hash
+            return True
+        except Exception:
+            return False
+
+    def get_new_lines(self, file_path: str, from_line: int = 0) -> tuple[list[str], int]:
+        """Đọc các dòng mới từ file NDJSON kể từ from_line. Trả (new_lines, total_lines)."""
+        if not os.path.exists(file_path):
+            return [], 0
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                all_lines = f.readlines()
+            total = len(all_lines)
+            if total > from_line:
+                return all_lines[from_line:], total
+            return [], total
+        except Exception:
+            return [], 0
+
+
 @dataclass(frozen=True)
 class Artifact:
     """Data object cho artifact của job."""
@@ -64,6 +111,13 @@ class JobLogsScreen(ctk.CTkFrame):
         self.log_filter_var = ctk.StringVar(value="Tất cả")
         self.search_var = ctk.StringVar(value="")
         self.auto_scroll_var = ctk.BooleanVar(value=True)
+        self._change_detector = ChangeDetector()
+        self._last_log_line_count = 0
+        self._artifacts_folder_mtime: float | None = None
+        self._cached_step_statuses: dict[str, str] = {}
+        self._timeline_rows_by_step_id: dict[str, int] = {}
+        self._timeline_frames_by_step_id: dict[str, ctk.CTkFrame] = {}
+        self._cached_artifact_paths: tuple[str, ...] = ()
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
         self._build_header()
@@ -110,7 +164,7 @@ class JobLogsScreen(ctk.CTkFrame):
         self.timeline_scroll.grid(row=1, column=0, sticky="nsew", padx=tokens.SPACING_MD, pady=(0, tokens.SPACING_LG))
         self.timeline_scroll.grid_columnconfigure(0, weight=1)
 
-    def _build_step_row(self, master: ctk.CTkFrame, row: int, step: Any) -> None:
+    def _build_step_row(self, master: ctk.CTkFrame, row: int, step: Any) -> ctk.CTkFrame:
         status = step.status.value if hasattr(step.status, "value") else str(step.status)
         icon, color = STATUS_STYLES.get(status, STATUS_STYLES["PENDING"])
         row_frame = ctk.CTkFrame(master, fg_color=tokens.COLOR_BACKGROUND, corner_radius=tokens.RADIUS_MD)
@@ -125,6 +179,7 @@ class JobLogsScreen(ctk.CTkFrame):
             detail_parts.append(f"lỗi: {step.error_message}")
         detail = ctk.CTkLabel(row_frame, text="  •  ".join(detail_parts), font=tokens.FONT_SMALL, text_color=tokens.COLOR_MUTED, anchor="w")
         detail.grid(row=1, column=1, sticky="ew", padx=(0, tokens.SPACING_SM), pady=(0, tokens.SPACING_SM))
+        return row_frame
 
     def _build_right_tabs(self, master: ctk.CTkFrame) -> None:
         right = ctk.CTkFrame(master, fg_color="transparent")
@@ -176,6 +231,7 @@ class JobLogsScreen(ctk.CTkFrame):
     def set_job_state(self, job_state: JobState | None, output_dir: str) -> None:
         self.job_state = job_state
         self.output_dir = output_dir
+        self._reset_polling_cache()
         self._refresh_all()
         self._schedule_realtime_refresh()
 
@@ -194,6 +250,15 @@ class JobLogsScreen(ctk.CTkFrame):
         self._refresh_artifacts()
         self._refresh_state_json()
 
+    def _reset_polling_cache(self) -> None:
+        self._change_detector = ChangeDetector()
+        self._last_log_line_count = 0
+        self._artifacts_folder_mtime = None
+        self._cached_step_statuses.clear()
+        self._timeline_rows_by_step_id.clear()
+        self._timeline_frames_by_step_id.clear()
+        self._cached_artifact_paths = ()
+
     def _schedule_realtime_refresh(self) -> None:
         if self.job_state is None:
             return
@@ -204,11 +269,35 @@ class JobLogsScreen(ctk.CTkFrame):
     def _poll_realtime_state(self) -> None:
         if self.job_state is None:
             return
-        self._refresh_all()
+
+        job_state_path = self._job_state_path()
+        if self._change_detector.has_changed(job_state_path):
+            self._load_latest_job_state_from_disk()
+            self._refresh_header()
+            self._refresh_timeline_cells()
+            self._refresh_artifacts_if_changed()
+            self._refresh_state_json()
+
+        new_lines, total = self._change_detector.get_new_lines(self._log_file_path(), self._last_log_line_count)
+        if new_lines:
+            self._append_log_lines(new_lines)
+            self._last_log_line_count = total
+        elif total < self._last_log_line_count:
+            self._refresh_logs()
+
+        if self._artifacts_folder_changed():
+            self._refresh_artifacts_if_changed()
+
         self._schedule_realtime_refresh()
 
+    def _job_state_path(self) -> str:
+        return str(Path(self.output_dir) / "job_state.json")
+
+    def _log_file_path(self) -> str:
+        return str(Path(self.output_dir) / "logs" / "job-events.ndjson")
+
     def _load_latest_job_state_from_disk(self) -> None:
-        state_path = Path(self.output_dir) / "job_state.json"
+        state_path = Path(self._job_state_path())
         if not state_path.exists():
             return
         try:
@@ -229,6 +318,9 @@ class JobLogsScreen(ctk.CTkFrame):
     def _refresh_timeline(self) -> None:
         for child in self.timeline_scroll.winfo_children():
             child.destroy()
+        self._cached_step_statuses.clear()
+        self._timeline_rows_by_step_id.clear()
+        self._timeline_frames_by_step_id.clear()
         if self.job_state is None:
             ctk.CTkLabel(self.timeline_scroll, text="Chưa có dữ liệu timeline", font=tokens.FONT_BODY, text_color=tokens.COLOR_MUTED).grid(row=0, column=0, padx=tokens.SPACING_MD, pady=tokens.SPACING_MD)
             return
@@ -240,8 +332,35 @@ class JobLogsScreen(ctk.CTkFrame):
                 current_phase = phase
                 ctk.CTkLabel(self.timeline_scroll, text=current_phase, font=tokens.FONT_BODY_BOLD, text_color=tokens.COLOR_PRIMARY, anchor="w").grid(row=row, column=0, sticky="ew", padx=tokens.SPACING_SM, pady=(tokens.SPACING_MD, tokens.SPACING_XS))
                 row += 1
-            self._build_step_row(self.timeline_scroll, row, step)
+            row_frame = self._build_step_row(self.timeline_scroll, row, step)
+            self._timeline_rows_by_step_id[step.step_id] = row
+            self._timeline_frames_by_step_id[step.step_id] = row_frame
+            self._cached_step_statuses[step.step_id] = self._step_status_value(step)
             row += 1
+
+    def _refresh_timeline_cells(self) -> None:
+        """Chỉ update cells có status khác với cached state."""
+        if self.job_state is None:
+            return
+        for step in self.job_state.steps:
+            cached_status = self._cached_step_statuses.get(step.step_id)
+            current_status = self._step_status_value(step)
+            if step.step_id not in self._timeline_rows_by_step_id:
+                self._refresh_timeline()
+                return
+            if cached_status != current_status:
+                self._update_single_cell(step)
+                self._cached_step_statuses[step.step_id] = current_status
+
+    def _update_single_cell(self, step: Any) -> None:
+        row = self._timeline_rows_by_step_id[step.step_id]
+        old_frame = self._timeline_frames_by_step_id.get(step.step_id)
+        if old_frame is not None:
+            old_frame.destroy()
+        self._timeline_frames_by_step_id[step.step_id] = self._build_step_row(self.timeline_scroll, row, step)
+
+    def _step_status_value(self, step: Any) -> str:
+        return step.status.value if hasattr(step.status, "value") else str(step.status)
 
     def _read_log_events(self) -> list[EventLogEntry]:
         level = self.log_filter_var.get().upper()
@@ -254,9 +373,7 @@ class JobLogsScreen(ctk.CTkFrame):
         query = self.search_var.get().strip().lower()
         lines = []
         for event in self._read_log_events():
-            timestamp = self._format_log_time(event.timestamp)
-            step_id = event.step_id or "JOB"
-            formatted = mask_sensitive_text(f"[{timestamp}] [{event.level.upper()}] [{step_id}] {event.message}")
+            formatted = self._format_log_event(event)
             if query and query not in formatted.lower():
                 continue
             lines.append(formatted)
@@ -266,11 +383,75 @@ class JobLogsScreen(ctk.CTkFrame):
         if self.auto_scroll_var.get():
             self.logs_textbox.see("end")
         self.logs_textbox.configure(state="disabled")
+        _, total = self._change_detector.get_new_lines(self._log_file_path(), 0)
+        self._last_log_line_count = total
 
-    def _refresh_artifacts(self) -> None:
+    def _append_log_lines(self, lines: list[str]) -> None:
+        """Append dòng mới vào log textbox, không rebuild."""
+        if not hasattr(self, "logs_textbox"):
+            return
+        formatted_lines = []
+        for line in lines:
+            parsed = self._parse_log_line(line.strip())
+            if parsed and self._matches_filter(parsed):
+                formatted_lines.append(parsed["formatted"])
+        if not formatted_lines:
+            return
+        self.logs_textbox.configure(state="normal")
+        current_text = self.logs_textbox.get("1.0", "end").strip()
+        if current_text == "Chưa có log thực cho job này.":
+            self.logs_textbox.delete("1.0", "end")
+            prefix = ""
+        else:
+            prefix = "\n" if current_text else ""
+        self.logs_textbox.insert("end", prefix + "\n".join(formatted_lines))
+        if self.auto_scroll_var.get():
+            self.logs_textbox.see("end")
+        self.logs_textbox.configure(state="disabled")
+
+    def _parse_log_line(self, line: str) -> dict[str, str] | None:
+        if not line:
+            return None
+        try:
+            event = EventLogEntry.model_validate(json.loads(line))
+        except Exception:
+            return None
+        return {"level": event.level.upper(), "formatted": self._format_log_event(event)}
+
+    def _matches_filter(self, parsed: dict[str, str]) -> bool:
+        level = self.log_filter_var.get().upper()
+        if level not in {"TẤT CẢ", "ALL"} and parsed["level"] != level:
+            return False
+        query = self.search_var.get().strip().lower()
+        return not query or query in parsed["formatted"].lower()
+
+    def _format_log_event(self, event: EventLogEntry) -> str:
+        timestamp = self._format_log_time(event.timestamp)
+        step_id = event.step_id or "JOB"
+        return mask_sensitive_text(f"[{timestamp}] [{event.level.upper()}] [{step_id}] {event.message}")
+
+    def _refresh_artifacts_if_changed(self) -> None:
+        artifacts = self._collect_artifacts()
+        artifact_paths = tuple(artifact.path for artifact in artifacts)
+        if artifact_paths != self._cached_artifact_paths:
+            self._refresh_artifacts(artifacts)
+
+    def _artifacts_folder_changed(self) -> bool:
+        """Check nếu thư mục artifacts có file mới/xóa."""
+        artifacts_dir = Path(self.output_dir)
+        if not artifacts_dir.exists():
+            return False
+        current_mtime = os.path.getmtime(artifacts_dir)
+        if current_mtime != self._artifacts_folder_mtime:
+            self._artifacts_folder_mtime = current_mtime
+            return True
+        return False
+
+    def _refresh_artifacts(self, artifacts: list[Artifact] | None = None) -> None:
         for child in self.artifact_scroll.winfo_children():
             child.destroy()
-        artifacts = self._collect_artifacts()
+        artifacts = self._collect_artifacts() if artifacts is None else artifacts
+        self._cached_artifact_paths = tuple(artifact.path for artifact in artifacts)
         if not artifacts:
             ctk.CTkLabel(self.artifact_scroll, text="Chưa có artifact", font=tokens.FONT_BODY, text_color=tokens.COLOR_MUTED).grid(row=0, column=0, sticky="w", padx=tokens.SPACING_MD, pady=tokens.SPACING_MD)
             return
@@ -296,8 +477,8 @@ class JobLogsScreen(ctk.CTkFrame):
         for step in self.job_state.steps:
             for path in step.artifacts:
                 artifacts.append(self._artifact_from_path(path))
-        state_path = Path(self.output_dir) / "job_state.json"
-        log_path = Path(self.output_dir) / "logs" / "job-events.ndjson"
+        state_path = Path(self._job_state_path())
+        log_path = Path(self._log_file_path())
         for path in (state_path, log_path):
             if path.exists():
                 artifacts.append(self._artifact_from_path(str(path)))
