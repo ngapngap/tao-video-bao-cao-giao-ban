@@ -20,9 +20,9 @@ class SidebarFrame(ctk.CTkFrame):
     )
 
     STATUS_COLORS: dict[str, str] = {
-        "Not ready": tokens.COLOR_WARNING,
-        "Ready": tokens.COLOR_SUCCESS,
-        "Error": tokens.COLOR_ERROR,
+        "Chưa sẵn sàng": tokens.COLOR_WARNING,
+        "Sẵn sàng": tokens.COLOR_SUCCESS,
+        "Lỗi": tokens.COLOR_ERROR,
     }
 
     def __init__(
@@ -30,7 +30,7 @@ class SidebarFrame(ctk.CTkFrame):
         master: ctk.CTkBaseClass,
         on_nav_change: Callable[[str], None],
         active_screen: str = "create_video",
-        config_status: str = "Not ready",
+        config_status: str = "Chưa sẵn sàng",
     ) -> None:
         super().__init__(
             master,
@@ -66,7 +66,7 @@ class SidebarFrame(ctk.CTkFrame):
 
         subtitle = ctk.CTkLabel(
             self,
-            text="Video Generator",
+            text="Trình tạo video",
             font=tokens.FONT_SMALL,
             text_color="#BFDBFE",
             anchor="w",
@@ -111,7 +111,7 @@ class SidebarFrame(ctk.CTkFrame):
 
         title = ctk.CTkLabel(
             status_frame,
-            text="Config status",
+            text="Trạng thái cấu hình",
             font=tokens.FONT_SMALL,
             text_color="#BFDBFE",
             anchor="w",

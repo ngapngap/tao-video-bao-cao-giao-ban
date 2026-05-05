@@ -13,17 +13,18 @@ class TopBarFrame(ctk.CTkFrame):
     """Thanh header trên cùng hiển thị tiêu đề, trạng thái và quick actions."""
 
     STATUS_COLORS: dict[str, str] = {
-        "Idle": tokens.COLOR_STATUS_IDLE,
-        "Running": tokens.COLOR_STATUS_RUNNING,
-        "Failed": tokens.COLOR_STATUS_FAILED,
-        "Done": tokens.COLOR_STATUS_DONE,
+        "Sẵn sàng": tokens.COLOR_STATUS_IDLE,
+        "Đang chạy": tokens.COLOR_STATUS_RUNNING,
+        "Thất bại": tokens.COLOR_STATUS_FAILED,
+        "Hoàn thành": tokens.COLOR_STATUS_DONE,
+        "Đã hủy": tokens.COLOR_NEUTRAL,
     }
 
     def __init__(
         self,
         master: ctk.CTkBaseClass,
         title: str,
-        status: str = "Idle",
+        status: str = "Sẵn sàng",
         on_open_outputs: Callable[[], None] | None = None,
         on_open_config: Callable[[], None] | None = None,
     ) -> None:
@@ -62,7 +63,7 @@ class TopBarFrame(ctk.CTkFrame):
             actions,
             text=status,
             height=28,
-            width=86,
+            width=96,
             corner_radius=999,
             fg_color=self.STATUS_COLORS.get(status, tokens.COLOR_NEUTRAL),
             text_color=tokens.COLOR_WHITE,
