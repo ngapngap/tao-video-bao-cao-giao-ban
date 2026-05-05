@@ -8,6 +8,7 @@ import re
 import shutil
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from app.ui.navigation import NavigationController
 from app.ui.screens import ConfigScreen, CreateVideoScreen, HistoryScreen, JobLogsScreen
 from app.ui.sidebar import SidebarFrame
 from app.ui.topbar import TopBarFrame
+from app.video.remotion_handoff import FinalPackager, RemotionManifest, RenderGate, TTSGenerator
 from app.workflow import WorkflowComposer, WorkflowValidator
 
 APP_TITLE = "Báo Cáo Giao Ban - Video Generator"
@@ -52,8 +54,13 @@ DEFAULT_STEPS: tuple[tuple[str, str], ...] = (
     ("P1.1", "Trích xuất số liệu báo cáo"),
     ("P1.2", "Sinh workflow mới"),
     ("S2.1", "Lập kế hoạch scene video"),
-    ("S2.2", "Sinh kịch bản lời đọc"),
-    ("S2.3", "Đóng gói kết quả mock"),
+    ("S2.2", "Tạo visual spec"),
+    ("S2.3", "Tạo kịch bản lời đọc TTS"),
+    ("S2.4", "Tạo component spec Remotion"),
+    ("S2.5", "Tạo asset plan"),
+    ("S2.6", "Tạo render plan"),
+    ("S2.7", "QA và fix preview"),
+    ("S2.8", "Đóng gói video final"),
 )
 
 
@@ -149,22 +156,28 @@ class App(ctk.CTk):
             "S1.3": self._handle_parse_pdf,
             "P1.1": self._make_extract_report_handler(payload),
             "P1.2": self._make_compose_workflow_handler(payload),
-            "S2.1": self._handle_mock_scene_plan,
-            "S2.2": self._handle_mock_tts_script,
-            "S2.3": self._handle_mock_final_packaging,
+            "S2.1": self._handle_create_scene_plan,
+            "S2.2": self._handle_create_visual_spec,
+            "S2.3": self._handle_create_tts_script,
+            "S2.4": self._handle_create_component_spec,
+            "S2.5": self._handle_create_asset_plan,
+            "S2.6": self._handle_create_render_plan,
+            "S2.7": self._handle_run_qa_fix,
+            "S2.8": self._handle_final_packaging,
         }
         for step_id, handler in handlers.items():
             runner.register_step(step_id, handler)
 
     def _handle_prepare_job_dirs(self, job_state: JobState, output_dir: str) -> StepResult:
         logger = self._logger(output_dir)
-        logger.log("INFO", job_state.current_step_id, "Tạo cấu trúc thư mục output cho job", job_state.job_id)
+        logger.log("INFO", job_state.current_step_id, "[S1.1] Bắt đầu chuẩn bị cấu trúc thư mục output", job_state.job_id)
+        self._simulate_step_progress(1.0)
         artifacts: list[str] = []
         for relative_dir in ("input", "parsed", "workflow", "tts", "remotion", "final", "logs"):
             path = Path(output_dir) / relative_dir
             path.mkdir(parents=True, exist_ok=True)
             artifacts.append(str(path))
-        logger.log("INFO", job_state.current_step_id, f"Đã sẵn sàng {len(artifacts)} thư mục output", job_state.job_id)
+        logger.log("INFO", job_state.current_step_id, f"[S1.1] Hoàn thành: đã sẵn sàng {len(artifacts)} thư mục output", job_state.job_id)
         return StepResult(artifacts=artifacts)
 
     def _make_copy_pdf_handler(self, payload: dict[str, str]):
@@ -175,9 +188,10 @@ class App(ctk.CTk):
                 return StepResult(success=False, error_code="PDF_NOT_FOUND", error_message=f"Không tìm thấy PDF hợp lệ: {source}")
             target = Path(output_dir) / "input" / source.name
             target.parent.mkdir(parents=True, exist_ok=True)
-            logger.log("INFO", job_state.current_step_id, f"Sao chép PDF đầu vào: {source.name}", job_state.job_id)
+            logger.log("INFO", job_state.current_step_id, f"[S1.2] Bắt đầu sao chép PDF đầu vào: {source.name}", job_state.job_id)
+            self._simulate_step_progress(1.0)
             shutil.copy2(source, target)
-            logger.log("INFO", job_state.current_step_id, f"Đã sao chép PDF vào {target}", job_state.job_id)
+            logger.log("INFO", job_state.current_step_id, f"[S1.2] Hoàn thành: đã sao chép PDF vào {target}", job_state.job_id)
             return StepResult(artifacts=[str(target)])
 
         return handler
@@ -185,7 +199,8 @@ class App(ctk.CTk):
     def _handle_parse_pdf(self, job_state: JobState, output_dir: str) -> StepResult:
         logger = self._logger(output_dir)
         pdf_path = self._find_input_pdf(output_dir)
-        logger.log("INFO", job_state.current_step_id, f"Bắt đầu đọc PDF thật bằng PyMuPDF/pdfplumber: {pdf_path.name}", job_state.job_id)
+        logger.log("INFO", job_state.current_step_id, f"[S1.3] Bắt đầu đọc PDF thật bằng PyMuPDF/pdfplumber: {pdf_path.name}", job_state.job_id)
+        self._simulate_step_progress(1.5)
         parse_result = PDFParser(str(pdf_path)).parse()
         normalized_text = DataNormalizer.normalize_text(parse_result.raw_text)
         artifact = Path(output_dir) / "parsed" / "pdf-parse-result.json"
@@ -195,24 +210,26 @@ class App(ctk.CTk):
             "total_pages": parse_result.total_pages,
             "text_chunk_count": len(parse_result.text_chunks),
             "table_chunk_count": len(parse_result.table_chunks),
+            "raw_text": normalized_text,
             "raw_text_preview": normalized_text[:2000],
             "text_chunks": [chunk.__dict__ for chunk in parse_result.text_chunks[:100]],
             "table_chunks": [chunk.__dict__ for chunk in parse_result.table_chunks[:50]],
         }
         self._write_json(artifact, data)
-        logger.log("INFO", job_state.current_step_id, f"PDF parse xong: {parse_result.total_pages} trang, {len(parse_result.text_chunks)} khối text, {len(parse_result.table_chunks)} bảng", job_state.job_id)
+        logger.log("INFO", job_state.current_step_id, f"[S1.3] Hoàn thành: PDF parse xong {parse_result.total_pages} trang, {len(parse_result.text_chunks)} khối text, {len(parse_result.table_chunks)} bảng", job_state.job_id)
         return StepResult(artifacts=[str(artifact)])
 
     def _make_extract_report_handler(self, payload: dict[str, str]):
         def handler(job_state: JobState, output_dir: str) -> StepResult:
             logger = self._logger(output_dir)
             parse_data = self._read_json(Path(output_dir) / "parsed" / "pdf-parse-result.json")
-            logger.log("INFO", job_state.current_step_id, "Trích xuất số liệu mock từ nội dung PDF đã parse", job_state.job_id)
+            logger.log("INFO", job_state.current_step_id, "[P1.1] Bắt đầu trích xuất metrics cơ bản từ dữ liệu PDF đã parse", job_state.job_id)
+            self._simulate_step_progress(1.5)
             extracted_report = self._build_extracted_report(parse_data, payload, job_state)
             artifact = Path(output_dir) / "parsed" / "extracted-report.json"
             self._write_json(artifact, extracted_report)
             validation = WorkflowValidator().validate_extracted_report(extracted_report)
-            logger.log("INFO", job_state.current_step_id, f"Extracted report có {len(extracted_report['metrics'])} metrics, validation_passed={validation.passed}", job_state.job_id)
+            logger.log("INFO", job_state.current_step_id, f"[P1.1] Hoàn thành: extracted report có {len(extracted_report['metrics'])} metrics từ parse result, validation_passed={validation.passed}", job_state.job_id)
             if not validation.passed:
                 return StepResult(success=False, error_code="EXTRACTED_REPORT_INVALID", error_message=json.dumps(validation.errors, ensure_ascii=False))
             return StepResult(artifacts=[str(artifact)])
@@ -223,52 +240,190 @@ class App(ctk.CTk):
         def handler(job_state: JobState, output_dir: str) -> StepResult:
             logger = self._logger(output_dir)
             extracted_report = self._read_json(Path(output_dir) / "parsed" / "extracted-report.json")
-            logger.log("INFO", job_state.current_step_id, "Sinh workflow từ extracted report và validate schema nghiệp vụ", job_state.job_id)
+            logger.log("INFO", job_state.current_step_id, "[P1.2] Bắt đầu sinh workflow từ extracted report và validate schema nghiệp vụ", job_state.job_id)
+            self._simulate_step_progress(1.5)
             workflow = WorkflowComposer(payload.get("workflow_template") or "workflow.md").compose_from_extracted_report(extracted_report, job_state.report_month, job_state.job_id)
             validation = WorkflowValidator().validate(workflow, extracted_report)
             workflow_path = Path(output_dir) / "workflow" / "generated-workflow.json"
             validation_path = Path(output_dir) / "workflow" / "workflow-validation.json"
             self._write_json(workflow_path, workflow)
             self._write_json(validation_path, validation.model_dump())
-            logger.log("INFO", job_state.current_step_id, f"Workflow sinh {len(workflow.get('scenes', []))} scenes, validation_passed={validation.passed}", job_state.job_id)
+            logger.log("INFO", job_state.current_step_id, f"[P1.2] Hoàn thành: workflow sinh {len(workflow.get('scenes', []))} scenes, validation_passed={validation.passed}", job_state.job_id)
             if not validation.passed:
                 return StepResult(success=False, error_code="WORKFLOW_VALIDATION_FAILED", error_message=json.dumps(validation.errors, ensure_ascii=False))
             return StepResult(artifacts=[str(workflow_path), str(validation_path)])
 
         return handler
 
-    def _handle_mock_scene_plan(self, job_state: JobState, output_dir: str) -> StepResult:
+    def _handle_create_scene_plan(self, job_state: JobState, output_dir: str) -> StepResult:
         logger = self._logger(output_dir)
         workflow = self._read_json(Path(output_dir) / "workflow" / "generated-workflow.json")
         scenes = workflow.get("scenes", [])
-        logger.log("INFO", job_state.current_step_id, f"Tạo scene plan mock cho {len(scenes)} scenes", job_state.job_id)
+        logger.log("INFO", job_state.current_step_id, f"[S2.1] Bắt đầu lập kế hoạch scene video từ workflow ({len(scenes)} scenes)", job_state.job_id)
+        self._simulate_step_progress(1.5)
+        scene_plan = {
+            "mode": "mock_llm",
+            "step": "S2.1_scene_planning",
+            "scene_count": len(scenes),
+            "scenes": [
+                {
+                    "scene_id": scene.get("scene_id"),
+                    "scene_type": scene.get("scene_type", "content"),
+                    "title": scene.get("title", ""),
+                    "objective": scene.get("objective", ""),
+                    "duration_policy": scene.get("duration_policy", {}),
+                    "source_data_keys": scene.get("source_data_keys", []),
+                    "tts": scene.get("tts", {}),
+                }
+                for scene in scenes
+            ],
+        }
         artifact = Path(output_dir) / "remotion" / "scene-plan.json"
-        self._write_json(artifact, {"mode": "mock_llm", "scene_count": len(scenes), "scenes": scenes})
+        self._write_json(artifact, scene_plan)
+        logger.log("INFO", job_state.current_step_id, f"[S2.1] Hoàn thành: đã tạo scene-plan.json cho {len(scenes)} scenes", job_state.job_id)
         return StepResult(artifacts=[str(artifact)])
 
-    def _handle_mock_tts_script(self, job_state: JobState, output_dir: str) -> StepResult:
+    def _handle_create_visual_spec(self, job_state: JobState, output_dir: str) -> StepResult:
         logger = self._logger(output_dir)
         scene_plan = self._read_json(Path(output_dir) / "remotion" / "scene-plan.json")
-        scripts = [{"scene_id": scene.get("scene_id"), "text": scene.get("tts", {}).get("text", "")} for scene in scene_plan.get("scenes", [])]
-        logger.log("INFO", job_state.current_step_id, f"Tạo TTS script mock cho {len(scripts)} scenes", job_state.job_id)
-        artifact = Path(output_dir) / "tts" / "tts-script.json"
-        self._write_json(artifact, {"mode": "mock_tts", "scripts": scripts})
+        scenes = scene_plan.get("scenes", [])
+        logger.log("INFO", job_state.current_step_id, "[S2.2] Bắt đầu tạo visual spec: chart types, layout, màu sắc, motion layer", job_state.job_id)
+        self._simulate_step_progress(1.5)
+        chart_types = ["kpi_card", "bar_chart", "line_chart", "table_summary"]
+        visual_spec = {
+            "mode": "mock_llm",
+            "step": "S2.2_visual_spec",
+            "design_system": {"theme": "data-dense-dashboard", "primary": "#1E40AF", "accent": "#F59E0B"},
+            "scene_visuals": [
+                {
+                    "scene_id": scene.get("scene_id"),
+                    "layout": "hero_title" if scene.get("scene_type") == "intro" else "metric_dashboard",
+                    "chart_type": chart_types[index % len(chart_types)],
+                    "motion": {"enter": "fade-up", "emphasis": "number-count", "exit": "fade"},
+                }
+                for index, scene in enumerate(scenes)
+            ],
+        }
+        artifact = Path(output_dir) / "remotion" / "visual-spec.json"
+        self._write_json(artifact, visual_spec)
+        logger.log("INFO", job_state.current_step_id, f"[S2.2] Hoàn thành: visual spec có {len(visual_spec['scene_visuals'])} scene visuals", job_state.job_id)
         return StepResult(artifacts=[str(artifact)])
 
-    def _handle_mock_final_packaging(self, job_state: JobState, output_dir: str) -> StepResult:
+    def _handle_create_tts_script(self, job_state: JobState, output_dir: str) -> StepResult:
         logger = self._logger(output_dir)
-        logger.log("INFO", job_state.current_step_id, "Đóng gói manifest video mock, chưa gọi render thật", job_state.job_id)
-        artifact = Path(output_dir) / "final" / "publish-manifest.json"
-        manifest = {
-            "job_id": job_state.job_id,
-            "report_month": job_state.report_month,
-            "mode": "mock_video_pipeline",
-            "final_video": None,
-            "artifacts": ["workflow/generated-workflow.json", "remotion/scene-plan.json", "tts/tts-script.json"],
-        }
-        self._write_json(artifact, manifest)
-        logger.log("INFO", job_state.current_step_id, f"Hoàn tất pipeline mock, manifest: {artifact}", job_state.job_id)
+        scene_plan = self._read_json(Path(output_dir) / "remotion" / "scene-plan.json")
+        scenes = scene_plan.get("scenes", [])
+        logger.log("INFO", job_state.current_step_id, "[S2.3] Bắt đầu tạo kịch bản TTS và audio placeholder theo từng scene", job_state.job_id)
+        self._simulate_step_progress(1.5)
+        scripts = [
+            {
+                "scene_id": scene.get("scene_id"),
+                "enabled": scene.get("tts", {}).get("enabled", False),
+                "text": scene.get("tts", {}).get("text", ""),
+                "voice": scene.get("tts", {}).get("voice", "vi_female"),
+            }
+            for scene in scenes
+        ]
+        tts_manifest = TTSGenerator(output_dir, mock_mode=True).generate_all([{"scene_id": item["scene_id"], "tts": {"enabled": item["enabled"], "text": item["text"], "voice": item["voice"]}} for item in scripts])
+        artifact = Path(output_dir) / "tts" / "tts-script.json"
+        self._write_json(artifact, {"mode": "mock_tts", "step": "S2.3_narration_tts", "scripts": scripts, "tts_manifest": tts_manifest})
+        logger.log("INFO", job_state.current_step_id, f"[S2.3] Hoàn thành: tạo TTS script cho {len(scripts)} scenes và audio placeholder", job_state.job_id)
         return StepResult(artifacts=[str(artifact)])
+
+    def _handle_create_component_spec(self, job_state: JobState, output_dir: str) -> StepResult:
+        logger = self._logger(output_dir)
+        scene_plan = self._read_json(Path(output_dir) / "remotion" / "scene-plan.json")
+        visual_spec = self._read_json(Path(output_dir) / "remotion" / "visual-spec.json")
+        visual_by_scene = {item.get("scene_id"): item for item in visual_spec.get("scene_visuals", [])}
+        logger.log("INFO", job_state.current_step_id, "[S2.4] Bắt đầu tạo Remotion component spec deterministic", job_state.job_id)
+        self._simulate_step_progress(1.5)
+        components = []
+        for scene in scene_plan.get("scenes", []):
+            scene_id = scene.get("scene_id")
+            scene_type = scene.get("scene_type", "content")
+            component_type = "TitleScene" if scene_type == "intro" else "ClosingScene" if scene_type == "closing" else "MetricScene"
+            components.append({"scene_id": scene_id, "type": component_type, "props": {"title": scene.get("title", ""), "visual": visual_by_scene.get(scene_id, {})}})
+        artifact = Path(output_dir) / "remotion" / "component-spec.json"
+        self._write_json(artifact, {"mode": "mock_llm", "step": "S2.4_component_spec", "components": components})
+        logger.log("INFO", job_state.current_step_id, f"[S2.4] Hoàn thành: component spec có {len(components)} components", job_state.job_id)
+        return StepResult(artifacts=[str(artifact)])
+
+    def _handle_create_asset_plan(self, job_state: JobState, output_dir: str) -> StepResult:
+        logger = self._logger(output_dir)
+        component_spec = self._read_json(Path(output_dir) / "remotion" / "component-spec.json")
+        logger.log("INFO", job_state.current_step_id, "[S2.5] Bắt đầu lập asset plan: fonts, icons, background, chart cache", job_state.job_id)
+        self._simulate_step_progress(1.5)
+        assets = [
+            {"asset_id": "font_primary", "type": "font", "name": "Segoe UI/Cascadia fallback", "required": True},
+            {"asset_id": "bg_data_grid", "type": "background", "name": "data-grid-light", "required": True},
+            {"asset_id": "icon_status", "type": "icon", "name": "status-pills", "required": False},
+        ]
+        for component in component_spec.get("components", []):
+            assets.append({"asset_id": f"chart_cache_{component.get('scene_id')}", "type": "chart_cache", "scene_id": component.get("scene_id"), "required": True})
+        artifact = Path(output_dir) / "remotion" / "asset-plan.json"
+        self._write_json(artifact, {"mode": "mock_llm", "step": "S2.5_asset_plan", "assets": assets})
+        logger.log("INFO", job_state.current_step_id, f"[S2.5] Hoàn thành: asset plan có {len(assets)} assets", job_state.job_id)
+        return StepResult(artifacts=[str(artifact)])
+
+    def _handle_create_render_plan(self, job_state: JobState, output_dir: str) -> StepResult:
+        logger = self._logger(output_dir)
+        scene_plan = self._read_json(Path(output_dir) / "remotion" / "scene-plan.json")
+        tts_script = self._read_json(Path(output_dir) / "tts" / "tts-script.json")
+        tts_manifest = tts_script.get("tts_manifest", {})
+        logger.log("INFO", job_state.current_step_id, "[S2.6] Bắt đầu tạo render plan: timeline sync TTS-first và frame ranges", job_state.job_id)
+        self._simulate_step_progress(2.0)
+        fps = 30
+        start_frame = 0
+        timeline = []
+        for scene in scene_plan.get("scenes", []):
+            scene_id = scene.get("scene_id")
+            duration_seconds = max(3.0, float(tts_manifest.get(scene_id, {}).get("duration_seconds") or 0), float(scene.get("duration_policy", {}).get("min_seconds") or 0))
+            duration_frames = int(duration_seconds * fps)
+            timeline.append({"scene_id": scene_id, "start_frame": start_frame, "duration_frames": duration_frames, "duration_seconds": round(duration_seconds, 1)})
+            start_frame += duration_frames
+        render_plan = {"mode": "mock_llm", "step": "S2.6_render_plan", "fps": fps, "timeline": timeline, "total_frames": start_frame, "estimated_duration_seconds": round(start_frame / fps, 1)}
+        artifact = Path(output_dir) / "remotion" / "render-plan.json"
+        self._write_json(artifact, render_plan)
+        logger.log("INFO", job_state.current_step_id, f"[S2.6] Hoàn thành: render plan {len(timeline)} scenes, {render_plan['estimated_duration_seconds']} giây", job_state.job_id)
+        return StepResult(artifacts=[str(artifact)])
+
+    def _handle_run_qa_fix(self, job_state: JobState, output_dir: str) -> StepResult:
+        logger = self._logger(output_dir)
+        workflow = self._read_json(Path(output_dir) / "workflow" / "generated-workflow.json")
+        component_spec = self._read_json(Path(output_dir) / "remotion" / "component-spec.json")
+        render_plan = self._read_json(Path(output_dir) / "remotion" / "render-plan.json")
+        tts_script = self._read_json(Path(output_dir) / "tts" / "tts-script.json")
+        logger.log("INFO", job_state.current_step_id, "[S2.7] Bắt đầu QA preview mock: kiểm tra sync, overflow, thiếu audio/component", job_state.job_id)
+        self._simulate_step_progress(2.0)
+        manifest = RemotionManifest(output_dir).build_manifest(workflow, component_spec, render_plan, tts_script.get("tts_manifest", {}))
+        preview_ok, preview_errors = RenderGate(output_dir).check_preview_ready(manifest)
+        final_ok, final_errors = RenderGate(output_dir).check_final_ready(manifest, tts_script.get("tts_manifest", {}))
+        issues = preview_errors + [error for error in final_errors if error not in preview_errors]
+        qa_report = {"mode": "mock_qa", "step": "S2.7_qa_fix", "preview_ready": preview_ok, "final_ready": final_ok, "issues": issues, "fixes_applied": [], "summary": "no issues found" if not issues else "issues detected"}
+        artifact = Path(output_dir) / "remotion" / "qa-fix.json"
+        self._write_json(artifact, qa_report)
+        logger.log("INFO", job_state.current_step_id, f"[S2.7] Hoàn thành: QA preview_ready={preview_ok}, final_ready={final_ok}, issues={len(issues)}", job_state.job_id)
+        if issues:
+            return StepResult(success=False, error_code="QA_CHECK_FAILED", error_message=json.dumps(issues, ensure_ascii=False), artifacts=[str(artifact)])
+        return StepResult(artifacts=[str(artifact)])
+
+    def _handle_final_packaging(self, job_state: JobState, output_dir: str) -> StepResult:
+        logger = self._logger(output_dir)
+        workflow = self._read_json(Path(output_dir) / "workflow" / "generated-workflow.json")
+        component_spec = self._read_json(Path(output_dir) / "remotion" / "component-spec.json")
+        render_plan = self._read_json(Path(output_dir) / "remotion" / "render-plan.json")
+        tts_script = self._read_json(Path(output_dir) / "tts" / "tts-script.json")
+        logger.log("INFO", job_state.current_step_id, "[S2.8] Bắt đầu đóng gói final: tạo Remotion manifest, video.mp4 mock và publish manifest", job_state.job_id)
+        self._simulate_step_progress(2.0)
+        remotion_manifest = RemotionManifest(output_dir).build_manifest(workflow, component_spec, render_plan, tts_script.get("tts_manifest", {}))
+        remotion_manifest_path = RemotionManifest(output_dir).save_manifest(remotion_manifest)
+        packager = FinalPackager(output_dir)
+        video_path = packager.create_mock_video()
+        packager.create_publish_manifest(job_state.job_id, job_state.report_month, video_path, remotion_manifest)
+        publish_path = Path(output_dir) / "final" / "publish-manifest.json"
+        video_full_path = Path(output_dir) / video_path
+        logger.log("INFO", job_state.current_step_id, f"[S2.8] Hoàn thành: đã tạo {video_full_path} và {publish_path}", job_state.job_id)
+        return StepResult(artifacts=[str(video_full_path), str(publish_path), str(remotion_manifest_path)])
 
     def _logger(self, output_dir: str) -> EventLogger:
         return EventLogger(output_dir)
@@ -281,29 +436,42 @@ class App(ctk.CTk):
         return pdf_files[0]
 
     def _build_extracted_report(self, parse_data: dict[str, Any], payload: dict[str, str], job_state: JobState) -> dict[str, Any]:
-        raw_text = parse_data.get("raw_text_preview", "")
-        numbers = re.findall(r"\d[\d.,]*", raw_text)
-        metrics = []
-        for index, number in enumerate(numbers[:5], 1):
-            metrics.append(
-                {
-                    "metric_key": f"metric_{index:02d}",
-                    "metric_name": f"Số liệu phát hiện {index}",
-                    "value": number,
-                    "unit": "",
-                    "citations": [{"page_no": 1, "source_snippet": raw_text[:240], "confidence": 0.5}],
-                }
-            )
-        if not metrics:
-            metrics.append(
-                {
-                    "metric_key": "summary_01",
-                    "metric_name": "Tóm tắt nội dung PDF",
-                    "value": "Đã đọc nội dung PDF",
-                    "unit": "",
-                    "citations": [{"page_no": 1, "source_snippet": raw_text[:240], "confidence": 0.4}],
-                }
-            )
+        raw_text = parse_data.get("raw_text") or parse_data.get("raw_text_preview", "")
+        preview = (parse_data.get("raw_text_preview") or raw_text[:2000])[:2000]
+        total_pages = int(parse_data.get("total_pages") or 0)
+        text_chunk_count = int(parse_data.get("text_chunk_count") or len(parse_data.get("text_chunks", [])))
+        table_chunk_count = int(parse_data.get("table_chunk_count") or len(parse_data.get("table_chunks", [])))
+        number_count = len(re.findall(r"\d[\d.,]*", raw_text))
+        metrics = [
+            {
+                "metric_key": "pdf_total_pages",
+                "metric_name": "Số trang PDF đã parse",
+                "value": total_pages,
+                "unit": "trang",
+                "citations": [{"page_no": 1, "source_snippet": preview[:240], "confidence": 0.95}],
+            },
+            {
+                "metric_key": "pdf_text_blocks",
+                "metric_name": "Số khối text trích xuất được",
+                "value": text_chunk_count,
+                "unit": "khối",
+                "citations": [{"page_no": 1, "source_snippet": preview[:240], "confidence": 0.9}],
+            },
+            {
+                "metric_key": "pdf_table_blocks",
+                "metric_name": "Số bảng trích xuất được",
+                "value": table_chunk_count,
+                "unit": "bảng",
+                "citations": [{"page_no": 1, "source_snippet": preview[:240], "confidence": 0.9}],
+            },
+            {
+                "metric_key": "pdf_numeric_tokens",
+                "metric_name": "Số token dạng số phát hiện trong nội dung PDF",
+                "value": number_count,
+                "unit": "token",
+                "citations": [{"page_no": 1, "source_snippet": preview[:240], "confidence": 0.75}],
+            },
+        ]
         return {
             "report_metadata": {
                 "title": payload.get("report_title") or "Báo cáo giao ban",
@@ -314,12 +482,15 @@ class App(ctk.CTk):
             "sections": [
                 {
                     "section_key": "pdf_summary",
-                    "summary": raw_text[:500] or "PDF không có text preview",
-                    "citations": [{"page_no": 1, "source_snippet": raw_text[:240], "confidence": 0.4}],
+                    "summary": preview[:500] or "PDF không có text preview",
+                    "citations": [{"page_no": 1, "source_snippet": preview[:240], "confidence": 0.4}],
                 }
             ],
-            "warnings": ["mock_extraction_from_pdf_text"],
+            "warnings": ["basic_extraction_from_pdf_parse_result", "llm_extraction_not_enabled"],
         }
+
+    def _simulate_step_progress(self, seconds: float) -> None:
+        time.sleep(seconds)
 
     def _write_json(self, path: Path, data: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
