@@ -15,6 +15,11 @@ class WorkflowValidationResult(BaseModel):
     suggested_fixes: list[str]
 
 
+class TemplateValidationResult(BaseModel):
+    passed: bool
+    errors: list[dict]
+
+
 class WorkflowValidator:
     """Validate workflow theo rules bắt buộc."""
 
@@ -77,6 +82,32 @@ class WorkflowValidator:
             passed=not any(error.get("severity") == "ERROR" for error in errors),
             errors=errors,
             suggested_fixes=[],
+        )
+
+    def validate_template(self, template_content: str) -> TemplateValidationResult:
+        """Kiểm tra template workflow.md có hợp lệ về cấu trúc không.
+        Không validate values vì template dùng placeholders.
+        """
+        errors: list[dict[str, str]] = []
+        normalized_content = template_content.lower()
+
+        if not re.search(r"scene_type\s*[:=].*intro", template_content, re.IGNORECASE) and "intro" not in normalized_content:
+            errors.append({"code": "MISSING_INTRO_TEMPLATE", "message": "Template thiếu scene intro"})
+
+        if not re.search(r"scene_type\s*[:=].*closing", template_content, re.IGNORECASE) and "closing" not in normalized_content:
+            errors.append({"code": "MISSING_CLOSING_TEMPLATE", "message": "Template thiếu scene closing"})
+
+        required_fields = ["scene_id", "scene_type", "title", "tts", "duration_policy"]
+        for field in required_fields:
+            if field not in template_content:
+                errors.append({"code": "MISSING_TEMPLATE_FIELD", "message": f"Template thiếu field {field}"})
+
+        if "INTRO_COUNT_EXACTLY_ONE" not in template_content:
+            errors.append({"code": "MISSING_VALIDATION_RULES", "message": "Template thiếu validation rules"})
+
+        return TemplateValidationResult(
+            passed=len(errors) == 0,
+            errors=errors,
         )
 
     def validate_extracted_report(self, extracted_report: dict) -> WorkflowValidationResult:

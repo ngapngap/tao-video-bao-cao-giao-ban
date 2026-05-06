@@ -13,6 +13,7 @@ import customtkinter as ctk
 
 from app.core.models import JobState, JobStatus, StepStatus
 from app.ui import tokens
+from app.workflow.validator import WorkflowValidator
 
 if not hasattr(ctk, "filedialog"):
     ctk.filedialog = filedialog
@@ -239,7 +240,7 @@ class CreateVideoScreen(ctk.CTkFrame):
         """Cập nhật readiness checklist từ trạng thái form hiện tại."""
         self.readiness_state["pdf_valid"] = self.selected_pdf_path is not None
         self.readiness_state["month_valid"] = self.validate_month(self.month_entry.get())
-        self.readiness_state["template_valid"] = Path(self.template_var.get()).exists()
+        self.readiness_state["template_valid"] = self._check_template_valid()[0]
         self.readiness_state["output_writable"] = self._is_output_writable()
         for key, state in self.readiness_state.items():
             indicator, label = self.readiness_widgets[key]
@@ -321,6 +322,28 @@ class CreateVideoScreen(ctk.CTkFrame):
             return "00:00"
         seconds = int((datetime.now(timezone.utc) - self.job_started_at).total_seconds())
         return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+    def _check_template_valid(self) -> tuple[bool, str]:
+        """Kiểm tra workflow template hợp lệ về cấu trúc, không validate placeholder values."""
+        template_path = self.template_var.get() or "workflow.md"
+        if not os.path.exists(template_path):
+            return False, "File workflow.md không tồn tại"
+
+        try:
+            with open(template_path, "r", encoding="utf-8") as file:
+                content = file.read()
+
+            if len(content) < 100:
+                return False, "File workflow.md quá ngắn"
+
+            result = WorkflowValidator().validate_template(content)
+            if not result.passed:
+                first_error = result.errors[0]["message"] if result.errors else "Template không hợp lệ"
+                return False, first_error
+
+            return True, "Template hợp lệ"
+        except Exception as exc:
+            return False, f"Lỗi đọc template: {exc}"
 
     def _is_output_writable(self) -> bool:
         try:
