@@ -5,15 +5,14 @@ Trả JSON với: report_metadata (title, period, organization), metrics (list),
 Mỗi metric: metric_key, metric_name, value, unit, citations (page_no, source_snippet).
 Không bịa số. Chỉ JSON."""
 
-P1_1_CHUNK_EXTRACTION = """Phân tích MỘT PHẦN đoạn văn bản báo cáo BHXH (chunk {chunk_index}/{total_chunks}). Trích xuất TẤT CẢ số liệu có cấu trúc tìm thấy trong chunk.
-Trả JSON object với key metrics, sections, warnings.
-Mỗi metric: metric_key, metric_name, value, unit, citations.
+P1_1_CHUNK_EXTRACTION = """Phân tích MỘT PHẦN đoạn văn bản báo cáo BHXH (chunk {chunk_index}/{total_chunks}). Trích xuất TẤT CẢ số liệu có cấu trúc.
+Trả JSON object với key metrics, sections, warnings; metrics=[] nếu không có số liệu.
+Mỗi metric: metric_key, metric_name, value, unit, page_no, source_snippet, citations.
 Mỗi citation: page_no, source_snippet, confidence; citations là list.
-Trích xuất đầy đủ, không bỏ sót số liệu trong chunk. Ưu tiên đầy đủ hơn là ngắn gọn.
+Với chunks nhỏ 1500 chars, ưu tiên trích xuất đầy đủ mọi số liệu trong chunk, không giới hạn số metric/chunk.
 Sections ghi các phần diễn giải quan trọng liên quan đến số liệu trong chunk.
 Không bịa số liệu. Chỉ dùng số liệu có trong chunk.
-Chỉ JSON object, không markdown, không giải thích.
-Nếu không có số liệu: {"metrics": [], "sections": [], "warnings": []} (metrics=[])."""
+Chỉ JSON object, không markdown, không giải thích."""
 
 P1_1B_SCREEN_PLANNING = """Đề xuất screens cho video báo cáo.
 Mỗi screen: screen_id, title, data_keys, visual_type, tts_text_draft.

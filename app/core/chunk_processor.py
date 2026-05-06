@@ -50,13 +50,11 @@ class ChunkProcessor:
         max_retry: int = 3,
         on_progress: Callable[[int, int, str], None] | None = None,
         parallel: bool = True,
-        max_workers: int = 4,
+        max_workers: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Xử lý tất cả chunks, skip chunk đã done, retry khi fail.
-
-        Mặc định chạy parallel tối đa ``max_workers`` chunk cùng lúc. Có thể đặt
-        ``parallel=False`` để giữ hành vi tuần tự cũ.
-        """
+        """Xử lý chunks, hỗ trợ parallel. max_workers=None = không giới hạn."""
+        if max_workers is None:
+            max_workers = len(chunks) if parallel else 1
         if not parallel:
             return self._process_sequential(chunks, processor, max_retry, on_progress)
         return self._process_parallel(chunks, processor, max_retry, on_progress, max_workers)

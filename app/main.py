@@ -278,7 +278,7 @@ class App(ctk.CTk):
             parse_data = self._read_json(Path(output_dir) / "parsed" / "pdf-parse-result.json")
             total_pages = parse_data.get("total_pages", "?")
             raw_text = str(parse_data.get("raw_text") or parse_data.get("raw_text_preview", ""))
-            chunks = self._chunk_pdf_text(raw_text, max_chars=4000)
+            chunks = self._chunk_pdf_text(raw_text, max_chars=1500)
             url, key, model = self._get_llm_config()
             llm_url = LLMClient(url, key, model).url if url else ""
             logger.log("INFO", "P1.1", f"▶ Bắt đầu trích xuất report từ PDF ({total_pages} trang)", job_state.job_id)
@@ -310,9 +310,9 @@ class App(ctk.CTk):
                 chunk_reports = processor.process_chunks(
                     chunks,
                     process_chunk,
-                    max_retry=int(self.runtime_config.get("runtime_policy", {}).get("max_retry") or 3),
+                    max_retry=2,
                     parallel=True,
-                    max_workers=min(len(chunks), 2),
+                    max_workers=len(chunks),
                     on_progress=lambda i, n, status: logger.log("INFO", "P1.1", f"  Chunk {i + 1}/{n}: {status}", job_state.job_id),
                 )
                 logger.log("INFO", "P1.1", f"  Đang merge {len(chunk_reports)} chunk results...", job_state.job_id)
@@ -729,28 +729,60 @@ class App(ctk.CTk):
                 sections.append({"section_key": key, "summary": str(summary), "citations": value.get("citations") or []})
         return sections
 
-    def _chunk_pdf_text(self, raw_text: str, max_chars: int = 8000) -> list[str]:
-        """Chia text thành chunks theo section headers để giảm timeout LLM."""
+    def _chunk_pdf_text(self, raw_text: str, max_chars: int = 1500) -> list[str]:
+        """Chia text thành chunks theo paragraph để giữ ngữ cảnh."""
         if not raw_text:
             return [""]
-        sections = re.split(r"\n(?=[IVX]+\.\s)", raw_text)
+
+        # Tách theo paragraph (double newline hoặc dòng trống)
+        paragraphs = re.split(r"\n\s*\n", raw_text.strip())
+
         chunks: list[str] = []
         current_chunk = ""
-        for section in sections:
-            if len(section) > max_chars:
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                    current_chunk = ""
-                chunks.extend(section[i : i + max_chars].strip() for i in range(0, len(section), max_chars) if section[i : i + max_chars].strip())
+
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
                 continue
-            if len(current_chunk) + len(section) + 1 > max_chars:
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                current_chunk = section
+
+            # Nếu paragraph ngắn hơn max_chars, gom vào chunk hiện tại khi còn đủ chỗ
+            if len(current_chunk) + len(para) + 2 <= max_chars:
+                current_chunk = f"{current_chunk}\n\n{para}" if current_chunk else para
+                continue
+
+            # Flush current chunk nếu có
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = ""
+
+            # Paragraph quá dài -> chia theo câu hoặc dấu chấm phẩy
+            if len(para) > max_chars:
+                sentences = re.split(r"(?<=[.!?;])\s+", para)
+                for sentence in sentences:
+                    sentence = sentence.strip()
+                    if not sentence:
+                        continue
+
+                    if len(current_chunk) + len(sentence) + 1 <= max_chars:
+                        current_chunk = f"{current_chunk} {sentence}" if current_chunk else sentence
+                    else:
+                        if current_chunk:
+                            chunks.append(current_chunk.strip())
+                        # Nếu câu vẫn quá dài -> chia brute force theo độ dài
+                        if len(sentence) > max_chars:
+                            for i in range(0, len(sentence), max_chars):
+                                part = sentence[i : i + max_chars].strip()
+                                if part:
+                                    chunks.append(part)
+                            current_chunk = ""
+                        else:
+                            current_chunk = sentence
             else:
-                current_chunk = f"{current_chunk}\n{section}" if current_chunk else section
+                current_chunk = para
+
         if current_chunk:
             chunks.append(current_chunk.strip())
+
         return chunks if chunks else [raw_text[:max_chars]]
 
     def _merge_llm_extracts(self, chunk_reports: list[dict[str, Any]]) -> dict[str, Any]:
