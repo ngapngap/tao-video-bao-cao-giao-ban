@@ -2,21 +2,35 @@
 
 Ứng dụng Python desktop portable dùng để tạo video báo cáo giao ban từ dữ liệu báo cáo.
 
-## Cài đặt nhanh
+## Tải về (repo private)
 
-### Cách 1: Tải bản portable
+Repo này đang ở chế độ private, vì vậy link download trực tiếp bằng curl/PowerShell có thể trả `Not Found` nếu chưa có xác thực GitHub.
 
-Tải file mới nhất từ [Releases](https://github.com/ngapngap/tao-video-bao-cao-giao-ban/releases):
+### Cách 1: Dùng GitHub CLI (khuyến nghị)
+
+Đăng nhập GitHub CLI trước nếu máy chưa đăng nhập:
 
 ```bash
-# Windows
-curl -L -o BaoCaoGiaoBan-VideoGenerator.exe https://github.com/ngapngap/tao-video-bao-cao-giao-ban/releases/latest/download/BaoCaoGiaoBan-VideoGenerator.exe
-
-# Hoặc dùng PowerShell
-Invoke-WebRequest -Uri "https://github.com/ngapngap/tao-video-bao-cao-giao-ban/releases/latest/download/BaoCaoGiaoBan-VideoGenerator.exe" -OutFile "BaoCaoGiaoBan-VideoGenerator.exe"
+gh auth login
 ```
 
-### Cách 2: Chạy từ source
+Tải bản portable từ release mới nhất:
+
+```bash
+gh release download v0.3.2 --repo ngapngap/tao-video-bao-cao-giao-ban --pattern "BaoCaoGiaoBan-VideoGenerator.exe"
+```
+
+Chạy file sau khi tải:
+
+```bash
+BaoCaoGiaoBan-VideoGenerator.exe
+```
+
+### Cách 2: Tải từ browser
+
+Vào https://github.com/ngapngap/tao-video-bao-cao-giao-ban/releases/latest và tải file `.exe`.
+
+### Cách 3: Chạy từ source
 
 ```bash
 git clone https://github.com/ngapngap/tao-video-bao-cao-giao-ban.git
@@ -29,10 +43,10 @@ python app/main.py
 
 App có tính năng tự kiểm tra phiên bản mới. Khi có bản cập nhật, app sẽ thông báo và tải tự động.
 
-Hoặc kiểm tra thủ công:
+Hoặc kiểm tra thủ công bằng GitHub CLI:
 
 ```bash
-curl -s https://api.github.com/repos/ngapngap/tao-video-bao-cao-giao-ban/releases/latest | python -c "import sys,json; r=json.load(sys.stdin); print(f'Latest: {r[\"tag_name\"]}')"
+gh release view --repo ngapngap/tao-video-bao-cao-giao-ban
 ```
 
 ## Chạy dev
