@@ -301,7 +301,7 @@ class App(ctk.CTk):
                         "total_chunks": len(chunks),
                         "chunk_text": chunk_text,
                     }
-                    result = self._llm_chat(P1_1_CHUNK_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id, max_tokens=8000)
+                    result = self._llm_chat(P1_1_CHUNK_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id, max_tokens=4000)
                     response_chars = len(json.dumps(result, ensure_ascii=False))
                     logger.log("INFO", "P1.1", f"  Chunk {chunk_index + 1}/{len(chunks)}: nhận {response_chars} chars", job_state.job_id)
                     return result
@@ -311,7 +311,7 @@ class App(ctk.CTk):
                     process_chunk,
                     max_retry=int(self.runtime_config.get("runtime_policy", {}).get("max_retry") or 3),
                     parallel=True,
-                    max_workers=min(len(chunks), 4),
+                    max_workers=min(len(chunks), 2),
                     on_progress=lambda i, n, status: logger.log("INFO", "P1.1", f"  Chunk {i + 1}/{n}: {status}", job_state.job_id),
                 )
                 logger.log("INFO", "P1.1", f"  Đang merge {len(chunk_reports)} chunk results...", job_state.job_id)
@@ -383,7 +383,7 @@ class App(ctk.CTk):
                 process_workflow_chunk,
                 max_retry=int(self.runtime_config.get("runtime_policy", {}).get("max_retry") or 3),
                 parallel=True,
-                max_workers=min(len(workflow_chunks), 4),
+                max_workers=min(len(workflow_chunks), 2),
                 on_progress=lambda i, n, status: logger.log("INFO", "P1.2", f"  Workflow chunk {i + 1}/{n}: {status}", job_state.job_id),
             )
             ai_workflow = self._merge_workflow_chunks(workflow_parts, job_state.report_month, job_state.job_id)
@@ -796,7 +796,8 @@ class App(ctk.CTk):
 
     def _llm_chat(self, system_prompt: str, input_payload: dict[str, Any], step_id: str, logger: EventLogger, job_id: str, max_tokens: int = 4000) -> dict[str, Any]:
         try:
-            result = self._llm_client().chat_with_retry_parse(system_prompt, json.dumps(input_payload, ensure_ascii=False), max_tokens=max_tokens)
+            timeout = float(self.runtime_config.get("runtime_policy", {}).get("step_timeout_seconds") or 300)
+            result = self._llm_client().chat_with_retry_parse(system_prompt, json.dumps(input_payload, ensure_ascii=False), max_tokens=max_tokens, timeout=timeout)
             if not isinstance(result, dict):
                 raise ValueError("LLM output phải là JSON object")
             return result

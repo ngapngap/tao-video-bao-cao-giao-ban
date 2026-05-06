@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import re
@@ -173,7 +174,21 @@ class LLMClient:
 
         raise ValueError(f"Cannot extract JSON from LLM response. First 500 chars: {stripped_content[:500]}")
 
-    def chat(self, system_prompt: str, user_content: str, temperature: float = 0.1, max_tokens: int = 4000) -> dict[str, Any]:
+    def _do_request(self, headers: dict[str, str], payload: dict[str, Any]) -> httpx.Response:
+        """Thực hiện HTTP request trong thread riêng để app-level timeout có thể cắt chờ."""
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(self.url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response
+
+    def chat(
+        self,
+        system_prompt: str,
+        user_content: str,
+        temperature: float = 0.1,
+        max_tokens: int = 4000,
+        timeout: float = 300.0,
+    ) -> dict[str, Any]:
         """Gọi LLM, trả về parsed JSON response."""
         start_time = time.time()
         headers = {
@@ -200,27 +215,44 @@ class LLMClient:
         raw_content: str | dict[str, Any] | list[Any] | None = None
         response: httpx.Response | None = None
         try:
-            logger.info("LLM request: url=%s, model=%s, content_length=%s", self.url, self.model, len(user_content))
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(self.url, headers=headers, json=payload)
-                response.raise_for_status()
-                content_type = response.headers.get("content-type", "")
-                response_text = response.text
-                if "text/event-stream" in content_type or response_text.lstrip().startswith("data:"):
-                    raw_content = self._parse_sse_response(response_text)
-                else:
-                    data = response.json()
-                    raw_content = data["choices"][0]["message"]["content"]
+            logger.info(
+                "LLM request sent: url=%s, model=%s, content_length=%s chars, max_tokens=%s, timeout=%ss",
+                self.url,
+                self.model,
+                len(user_content),
+                max_tokens,
+                timeout,
+            )
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(self._do_request, headers, payload)
+            try:
+                response = future.result(timeout=timeout)
+            except concurrent.futures.TimeoutError as exc:
+                future.cancel()
+                executor.shutdown(wait=False, cancel_futures=True)
                 elapsed = time.time() - start_time
-                logger.info(
-                    "LLM response received: status=%s, elapsed=%.2fs, response_length=%s, content_type=%s",
-                    response.status_code,
-                    elapsed,
-                    len(response_text),
-                    content_type or "N/A",
-                )
-                logger.debug("Raw LLM response content preview: %s", str(raw_content)[:500])
-                return self._extract_json_from_content(raw_content)
+                logger.error("LLM request timeout after %.1fs: content_length=%s chars, max_tokens=%s", elapsed, len(user_content), max_tokens)
+                raise TimeoutError(f"LLM request timeout after {timeout:.0f}s") from exc
+            else:
+                executor.shutdown(wait=False, cancel_futures=True)
+
+            content_type = response.headers.get("content-type", "")
+            response_text = response.text
+            if "text/event-stream" in content_type or response_text.lstrip().startswith("data:"):
+                raw_content = self._parse_sse_response(response_text)
+            else:
+                data = response.json()
+                raw_content = data["choices"][0]["message"]["content"]
+            elapsed = time.time() - start_time
+            logger.info(
+                "LLM response received: status=%s, elapsed=%.2fs, response_length=%s chars, content_type=%s",
+                response.status_code,
+                elapsed,
+                len(response_text),
+                content_type or "N/A",
+            )
+            logger.debug("Raw LLM response content preview: %s", str(raw_content)[:500])
+            return self._extract_json_from_content(raw_content)
         except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
             raw_preview = str(raw_content)[:500] if raw_content is not None else "N/A"
             if raw_preview == "N/A" and response is not None:
@@ -233,12 +265,20 @@ class LLMClient:
             }
             raise ValueError(f"LLM response parse failed: {error_detail}") from exc
 
-    def chat_with_retry_parse(self, system_prompt: str, user_content: str, max_parse_retries: int = 2, temperature: float = 0.1, max_tokens: int = 4000) -> dict[str, Any]:
+    def chat_with_retry_parse(
+        self,
+        system_prompt: str,
+        user_content: str,
+        max_parse_retries: int = 2,
+        temperature: float = 0.1,
+        max_tokens: int = 4000,
+        timeout: float = 300.0,
+    ) -> dict[str, Any]:
         """Gọi LLM và retry khi response không parse được thành JSON."""
         retry_prompt = system_prompt
         for attempt in range(max_parse_retries + 1):
             try:
-                return self.chat(retry_prompt, user_content, temperature=temperature, max_tokens=max_tokens)
+                return self.chat(retry_prompt, user_content, temperature=temperature, max_tokens=max_tokens, timeout=timeout)
             except ValueError:
                 if attempt >= max_parse_retries:
                     raise
