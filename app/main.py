@@ -273,32 +273,45 @@ class App(ctk.CTk):
             logger = self._logger(output_dir)
             start = time.time()
             parse_data = self._read_json(Path(output_dir) / "parsed" / "pdf-parse-result.json")
-            logger.log("INFO", job_state.current_step_id, "▶ Bắt đầu trích xuất report từ dữ liệu PDF đã parse", job_state.job_id)
+            total_pages = parse_data.get("total_pages", "?")
+            logger.log("INFO", "P1.1", f"▶ Bắt đầu trích xuất report từ PDF ({total_pages} trang)", job_state.job_id)
             self._simulate_step_progress(0.5)
             raw_text = parse_data.get("raw_text") or parse_data.get("raw_text_preview", "")
-            input_payload = {
-                "report_month": job_state.report_month,
-                "report_title": payload.get("report_title") or "Báo cáo giao ban",
-                "owner_org": payload.get("owner_org") or "Chưa nhập đơn vị",
-                "pdf_parse_result": {**parse_data, "raw_text": raw_text},
-            }
+            chunks = self._chunk_pdf_text(str(raw_text))
             url, key, model = self._get_llm_config()
-            logger.log("INFO", "P1.1", f"LLM config: url={url}, model={model}, key={'***' if key else 'EMPTY'}", job_state.job_id)
+            llm_url = LLMClient(url, key, model).url if url else ""
+            logger.log("INFO", "P1.1", f"  LLM: {llm_url or 'EMPTY'} | Model: {model or 'EMPTY'}", job_state.job_id)
+            logger.log("INFO", "P1.1", f"  Input: {len(str(raw_text))} chars, chia thành {len(chunks)} chunk(s)", job_state.job_id)
             if not url or not key:
-                logger.log("WARN", "P1.1", "Thiếu LLM config, dùng mock extract", job_state.job_id)
+                logger.log("WARN", "P1.1", "  Thiếu LLM config, dùng mock extract", job_state.job_id)
                 raw_report = self._build_extracted_report(parse_data, payload, job_state)
             else:
-                llm_url = LLMClient(url, key, model).url
-                logger.log("INFO", "P1.1", f"Gọi LLM API: {llm_url}", job_state.job_id)
-                raw_report = self._llm_chat(P1_1_PDF_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id)
+                chunk_reports: list[dict[str, Any]] = []
+                for index, chunk_text in enumerate(chunks, start=1):
+                    logger.log("INFO", "P1.1", f"  Chunk {index}/{len(chunks)}: chuẩn bị payload {len(chunk_text)} chars", job_state.job_id)
+                    input_payload = {
+                        "report_month": job_state.report_month,
+                        "report_title": payload.get("report_title") or "Báo cáo giao ban",
+                        "owner_org": payload.get("owner_org") or "Chưa nhập đơn vị",
+                        "chunk_index": index,
+                        "chunk_count": len(chunks),
+                        "pdf_parse_result": {**parse_data, "raw_text": chunk_text, "raw_text_preview": chunk_text[:2000]},
+                    }
+                    logger.log("INFO", "P1.1", "  Đang gửi request đến LLM API... (có thể mất 1-3 phút)", job_state.job_id)
+                    chunk_report = self._llm_chat(P1_1_PDF_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id)
+                    response_chars = len(json.dumps(chunk_report, ensure_ascii=False))
+                    logger.log("INFO", "P1.1", f"  Đã nhận response từ LLM ({response_chars} chars)", job_state.job_id)
+                    chunk_reports.append(chunk_report)
+                raw_report = self._merge_llm_extracts(chunk_reports)
             try:
+                logger.log("INFO", "P1.1", "  Đang phân tích và chuẩn hóa dữ liệu...", job_state.job_id)
                 RawLLMExtractedReport.model_validate(raw_report)
                 extracted_report = self._normalize_llm_extract(raw_report)
                 extracted_report = ExtractedReport.model_validate(extracted_report).model_dump(mode="json")
             except Exception as normalize_err:
-                logger.log("WARN", "P1.1", f"Normalize LLM output failed ({normalize_err}), dùng mock extract", job_state.job_id)
+                logger.log("WARN", "P1.1", f"  Normalize LLM output failed ({normalize_err}), dùng mock extract", job_state.job_id)
                 extracted_report = self._build_extracted_report(parse_data, payload, job_state)
-            logger.log("INFO", job_state.current_step_id, f"Đã gọi LLM extract, nhận {len(extracted_report.get('metrics', []))} metrics", job_state.job_id)
+            logger.log("INFO", "P1.1", f"  Tìm thấy {len(extracted_report.get('metrics', []))} metrics từ {len(extracted_report.get('sections', []))} sections", job_state.job_id)
             artifact = Path(output_dir) / "parsed" / "extracted-report.json"
             self._write_json(artifact, extracted_report)
             validation = WorkflowValidator().validate_extracted_report(extracted_report)
@@ -543,43 +556,157 @@ class App(ctk.CTk):
     def _normalize_llm_extract(self, raw_data: dict[str, Any]) -> dict[str, Any]:
         """Chuyển output LLM tự do sang format ExtractedReport chuẩn."""
         rm = raw_data.get("report_metadata", {})
-        if isinstance(rm, dict) and rm.get("title") and rm.get("period") and rm.get("organization"):
-            return raw_data
-
-        title = raw_data.get("report_title") or raw_data.get("title") or rm.get("title") or raw_data.get("report_name") or "Báo cáo giao ban"
-        period = raw_data.get("report_month") or raw_data.get("period") or rm.get("period") or raw_data.get("month") or ""
-        org = raw_data.get("owner_org") or raw_data.get("organization") or raw_data.get("issuing_org") or raw_data.get("org") or rm.get("organization") or ""
+        if not isinstance(rm, dict):
+            rm = {}
 
         normalized: dict[str, Any] = {
             "report_metadata": {
-                "title": str(title),
-                "period": str(period),
-                "organization": str(org),
+                "title": str(
+                    rm.get("report_title")
+                    or rm.get("title")
+                    or raw_data.get("report_title")
+                    or raw_data.get("title")
+                    or raw_data.get("report_name")
+                    or "Báo cáo giao ban"
+                ),
+                "period": str(
+                    rm.get("period")
+                    or rm.get("report_month")
+                    or raw_data.get("report_month")
+                    or raw_data.get("period")
+                    or raw_data.get("month")
+                    or ""
+                ),
+                "organization": str(
+                    rm.get("owner_org")
+                    or rm.get("organization")
+                    or raw_data.get("owner_org")
+                    or raw_data.get("organization")
+                    or raw_data.get("issuing_org")
+                    or raw_data.get("org")
+                    or ""
+                ),
             },
             "metrics": [],
-            "sections": raw_data.get("sections", []),
+            "sections": self._extract_sections(raw_data),
             "warnings": raw_data.get("warnings", []),
         }
 
-        raw_metrics = raw_data.get("metrics", {})
-        if isinstance(raw_metrics, dict):
-            for category, items in raw_metrics.items():
-                if isinstance(items, dict):
-                    for key, value in items.items():
-                        if isinstance(value, dict) and "value" in value:
-                            normalized["metrics"].append(
-                                {
-                                    "metric_key": f"{category}.{key}",
-                                    "metric_name": key.replace("_", " ").title(),
-                                    "value": str(value.get("value", "")),
-                                    "unit": value.get("unit", ""),
-                                    "citations": value.get("citations", []),
-                                }
-                            )
-        elif isinstance(raw_metrics, list):
-            normalized["metrics"] = raw_metrics
-
+        self._flatten_dict_to_metrics(raw_data, normalized["metrics"], "")
+        normalized["metrics"] = self._dedupe_metrics(normalized["metrics"])
         return normalized
+
+    def _flatten_dict_to_metrics(self, data: dict[str, Any], metrics: list[dict[str, Any]], prefix: str) -> None:
+        """Đệ quy flatten mọi dict có 'value' key thành metrics list."""
+        skip_keys = {"report_metadata", "warnings", "issues", "priorities_next_month", "metadata", "sections"}
+        for key, value in data.items():
+            if key in skip_keys:
+                continue
+            if isinstance(value, dict):
+                metric_key = f"{prefix}.{key}" if prefix else key
+                if "value" in value:
+                    metrics.append(
+                        {
+                            "metric_key": metric_key,
+                            "metric_name": str(value.get("metric_name") or value.get("name") or key.replace("_", " ").title()),
+                            "value": str(value.get("value", "")),
+                            "unit": str(value.get("unit") or ""),
+                            "comparison_type": str(value.get("comparison_type") or "none"),
+                            "comparison_value": value.get("comparison_value"),
+                            "citations": value.get("citations") or [],
+                        }
+                    )
+                else:
+                    self._flatten_dict_to_metrics(value, metrics, metric_key)
+            elif key == "metrics" and isinstance(value, list):
+                for index, item in enumerate(value):
+                    if isinstance(item, dict):
+                        metrics.append(
+                            {
+                                "metric_key": str(item.get("metric_key") or item.get("key") or f"metrics.{index}"),
+                                "metric_name": str(item.get("metric_name") or item.get("name") or item.get("metric_key") or f"Metric {index + 1}"),
+                                "value": str(item.get("value", "")),
+                                "unit": str(item.get("unit") or ""),
+                                "comparison_type": str(item.get("comparison_type") or "none"),
+                                "comparison_value": item.get("comparison_value"),
+                                "citations": item.get("citations") or [],
+                            }
+                        )
+
+    def _dedupe_metrics(self, metrics: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for metric in metrics:
+            identity = (str(metric.get("metric_key") or ""), str(metric.get("value") or ""))
+            if identity in seen:
+                continue
+            seen.add(identity)
+            deduped.append(metric)
+        return deduped
+
+    def _extract_sections(self, raw_data: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_sections = raw_data.get("sections", [])
+        sections: list[dict[str, Any]] = []
+        if isinstance(raw_sections, list):
+            for index, section in enumerate(raw_sections):
+                if isinstance(section, dict):
+                    sections.append(
+                        {
+                            "section_key": str(section.get("section_key") or section.get("key") or f"section_{index + 1}"),
+                            "summary": str(section.get("summary") or section.get("title") or section.get("name") or ""),
+                            "citations": section.get("citations") or [],
+                        }
+                    )
+        for key, value in raw_data.items():
+            if key.startswith("section_") and isinstance(value, dict):
+                summary = value.get("summary") or value.get("title") or value.get("name") or key.replace("_", " ").title()
+                sections.append({"section_key": key, "summary": str(summary), "citations": value.get("citations") or []})
+        return sections
+
+    def _chunk_pdf_text(self, raw_text: str, max_chars: int = 8000) -> list[str]:
+        """Chia text thành chunks theo section headers để giảm timeout LLM."""
+        if not raw_text:
+            return [""]
+        sections = re.split(r"\n(?=[IVX]+\.\s)", raw_text)
+        chunks: list[str] = []
+        current_chunk = ""
+        for section in sections:
+            if len(section) > max_chars:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                    current_chunk = ""
+                chunks.extend(section[i : i + max_chars].strip() for i in range(0, len(section), max_chars) if section[i : i + max_chars].strip())
+                continue
+            if len(current_chunk) + len(section) + 1 > max_chars:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                current_chunk = section
+            else:
+                current_chunk = f"{current_chunk}\n{section}" if current_chunk else section
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+        return chunks if chunks else [raw_text[:max_chars]]
+
+    def _merge_llm_extracts(self, chunk_reports: list[dict[str, Any]]) -> dict[str, Any]:
+        """Merge kết quả LLM theo chunk trước khi normalize."""
+        if not chunk_reports:
+            return {}
+        merged: dict[str, Any] = {"metrics": [], "sections": [], "warnings": []}
+        for report in chunk_reports:
+            for key, value in report.items():
+                if key == "warnings" and isinstance(value, list):
+                    merged["warnings"].extend(value)
+                elif key == "sections" and isinstance(value, list):
+                    merged["sections"].extend(value)
+                elif key == "metrics" and isinstance(value, list):
+                    merged["metrics"].extend(value)
+                elif key not in merged or merged.get(key) in (None, "", [], {}):
+                    merged[key] = value
+                elif isinstance(value, dict) and isinstance(merged.get(key), dict):
+                    merged[key] = {**merged[key], **value}
+                else:
+                    merged[f"chunk_{len(merged)}_{key}"] = value
+        return merged
 
     def _llm_chat(self, system_prompt: str, input_payload: dict[str, Any], step_id: str, logger: EventLogger, job_id: str) -> dict[str, Any]:
         try:
