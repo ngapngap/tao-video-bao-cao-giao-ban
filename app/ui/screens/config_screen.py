@@ -14,6 +14,7 @@ from app.security.credential_store import CredentialStore
 from app.ui import tokens
 from app.video.remotion_handoff import TTSGenerator
 
+DEFAULT_LLM_URL = "http://10.48.240.50:20128/v1"
 MODEL_CREDENTIAL_ID = "tao-video-bao-cao/model/default"
 TTS_CREDENTIAL_ID = "tao-video-bao-cao/tts/default"
 
@@ -62,7 +63,7 @@ class ConfigScreen(ctk.CTkFrame):
 
     def _build_llm_card(self) -> None:
         self._build_card_heading(self.llm_card, "Mô hình LLM", row=0)
-        self.url_model_entry, self.url_model_error = self._build_entry_field(self.llm_card, row=1, label="URL model", placeholder="https://api.openai.com/v1")
+        self.url_model_entry, self.url_model_error = self._build_entry_field(self.llm_card, row=1, label="URL model", placeholder=DEFAULT_LLM_URL)
         self.apikey_model_entry, self.apikey_model_error = self._build_key_field(self.llm_card, row=2, label="API key model", toggle_command=self.toggle_model_key)
         self.default_model_combo, self.default_model_entry, self.default_model_error = self._build_model_selector(self.llm_card, row=3, label="Model mặc định")
         self.credential_id_model_entry, _ = self._build_entry_field(self.llm_card, row=4, label="Credential ID model", placeholder="Chưa lưu", readonly=True)
@@ -271,7 +272,7 @@ class ConfigScreen(ctk.CTkFrame):
             self.on_config_saved()
 
     def reset_form(self) -> None:
-        self._set_entry_value(self.url_model_entry, "")
+        self._set_entry_value(self.url_model_entry, DEFAULT_LLM_URL)
         self._reset_model_selector()
         self._set_entry_value(self.url_tts_entry, "")
         self._set_entry_value(self.model_tts_entry, "")
