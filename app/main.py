@@ -22,7 +22,8 @@ import customtkinter as ctk
 
 from app.ai import ExtractedReport, LLMClient, P1_1B_SCREEN_PLANNING, P1_1_CHUNK_EXTRACTION, P1_2_WORKFLOW_COMPOSITION, WorkflowOutput
 from app.ai.schemas import RawLLMExtractedReport
-from app.core import ChunkProcessor, EventLogger, JobRunner, JobState, JobStatus, RetryPolicy, StepRecord, StepResult
+from app.core import ChunkProcessor, EventLogger, JobRunner, JobState, JobStatus, RetryPolicy, StepRecord, StepResult, StepStatus
+from app.core.checkpoint import CheckpointManager
 from app.core.event_logger import mask_sensitive_text
 from app.pdf.normalizer import DataNormalizer
 from app.pdf.parser import PDFParser
@@ -349,17 +350,22 @@ class App(ctk.CTk):
             return StepResult(success=False, error_code="SCREEN_PLAN_INVALID", error_message="P1.1b output phải có screens list với intro/closing")
         artifact = Path(output_dir) / "parsed" / "screen-plan.json"
         self._write_json(artifact, screen_plan)
+        artifacts = [str(artifact)]
         logger.log("INFO", job_state.current_step_id, f"✓ Hoàn thành: screen-plan có {len(screens)} screens ({time.time() - start:.1f}s)", job_state.job_id)
-        return StepResult(artifacts=[str(artifact)])
+        self._save_step_done_checkpoint(job_state, output_dir, "P1.1b", artifacts)
+        return StepResult(artifacts=artifacts)
 
     def _make_compose_workflow_handler(self, payload: dict[str, str]):
         def handler(job_state: JobState, output_dir: str) -> StepResult:
             logger = self._logger(output_dir)
             start = time.time()
-            extracted_report = self._read_json(Path(output_dir) / "parsed" / "extracted-report.json")
-            screen_plan = self._read_json(Path(output_dir) / "parsed" / "screen-plan.json")
+            extracted_report_path = Path(output_dir) / "parsed" / "extracted-report.json"
+            screen_plan_path = Path(output_dir) / "parsed" / "screen-plan.json"
+            extracted_report = self._read_json(extracted_report_path)
+            screen_plan = self._read_json(screen_plan_path)
             template_path = payload.get("workflow_template") or "workflow.md"
-            logger.log("INFO", job_state.current_step_id, "▶ Bắt đầu sinh workflow từ extracted report và workflow template theo chunk", job_state.job_id)
+            logger.log("INFO", "P1.2", "▶ Bắt đầu sinh workflow từ screen plan", job_state.job_id)
+            logger.log("INFO", job_state.current_step_id, f"  Input artifacts: {screen_plan_path}, {extracted_report_path}", job_state.job_id)
             self._simulate_step_progress(0.5)
             template_content = Path(template_path).read_text(encoding="utf-8")
             workflow_chunks = self._chunk_workflow_sections(extracted_report, screen_plan)
@@ -881,7 +887,22 @@ class App(ctk.CTk):
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _read_json(self, path: Path) -> dict[str, Any]:
+        if not path.exists():
+            raise FileNotFoundError(f"Không tìm thấy input artifact: {path}")
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def _save_step_done_checkpoint(self, job_state: JobState, output_dir: str, step_id: str, artifacts: list[str]) -> None:
+        """Ghi checkpoint ngay sau khi handler tạo artifact quan trọng để tránh kẹt resume nếu UI/thread bị gián đoạn."""
+        for step in job_state.steps:
+            if step.step_id == step_id:
+                step.status = StepStatus.DONE
+                step.ended_at = datetime.now(timezone.utc).isoformat()
+                step.error_code = None
+                step.error_message = None
+                step.artifacts = artifacts
+                job_state.updated_at = datetime.now(timezone.utc).isoformat()
+                CheckpointManager(output_dir).save_state(job_state)
+                return
 
     def _run_active_job(self) -> None:
         if self.active_runner is None:

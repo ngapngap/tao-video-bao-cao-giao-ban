@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 
 class Citation(BaseModel):
-    page_no: int
+    page_no: Optional[int] = None
     source_snippet: str
     confidence: float
 
