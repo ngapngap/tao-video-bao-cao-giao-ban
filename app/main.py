@@ -310,6 +310,8 @@ class App(ctk.CTk):
                     chunks,
                     process_chunk,
                     max_retry=int(self.runtime_config.get("runtime_policy", {}).get("max_retry") or 3),
+                    parallel=True,
+                    max_workers=min(len(chunks), 4),
                     on_progress=lambda i, n, status: logger.log("INFO", "P1.1", f"  Chunk {i + 1}/{n}: {status}", job_state.job_id),
                 )
                 logger.log("INFO", "P1.1", f"  Đang merge {len(chunk_reports)} chunk results...", job_state.job_id)
@@ -380,6 +382,8 @@ class App(ctk.CTk):
                 workflow_chunks,
                 process_workflow_chunk,
                 max_retry=int(self.runtime_config.get("runtime_policy", {}).get("max_retry") or 3),
+                parallel=True,
+                max_workers=min(len(workflow_chunks), 4),
                 on_progress=lambda i, n, status: logger.log("INFO", "P1.2", f"  Workflow chunk {i + 1}/{n}: {status}", job_state.job_id),
             )
             ai_workflow = self._merge_workflow_chunks(workflow_parts, job_state.report_month, job_state.job_id)
