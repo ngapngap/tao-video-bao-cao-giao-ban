@@ -90,9 +90,6 @@ class ConfigScreen(ctk.CTkFrame):
         self.enable_resume_var = ctk.BooleanVar(value=True)
         self.enable_resume_checkbox = ctk.CTkCheckBox(checkbox_frame, text="Cho phép tiếp tục từ checkpoint", variable=self.enable_resume_var, fg_color=tokens.COLOR_PRIMARY, hover_color=tokens.COLOR_PRIMARY_HOVER, border_color=tokens.COLOR_BORDER, text_color=tokens.COLOR_TEXT, font=tokens.FONT_BODY)
         self.enable_resume_checkbox.grid(row=0, column=0, sticky="w", pady=(0, tokens.SPACING_SM))
-        self.mock_ai_mode_var = ctk.BooleanVar(value=False)
-        self.mock_ai_mode_checkbox = ctk.CTkCheckBox(checkbox_frame, text="Chế độ AI mock", variable=self.mock_ai_mode_var, fg_color=tokens.COLOR_PRIMARY, hover_color=tokens.COLOR_PRIMARY_HOVER, border_color=tokens.COLOR_BORDER, text_color=tokens.COLOR_TEXT, font=tokens.FONT_BODY)
-        self.mock_ai_mode_checkbox.grid(row=1, column=0, sticky="w")
 
     def _build_health_card(self) -> None:
         self.health_card = self._create_card(self)
@@ -287,7 +284,6 @@ class ConfigScreen(ctk.CTkFrame):
         self._set_readonly_value(self.credential_id_model_entry, "")
         self._set_readonly_value(self.credential_id_tts_entry, "")
         self.enable_resume_var.set(True)
-        self.mock_ai_mode_var.set(True)
         self.has_saved_keys = False
         self.model_key_visible = False
         self.tts_key_visible = False
@@ -366,10 +362,6 @@ class ConfigScreen(ctk.CTkFrame):
         self._start_connection_test("tts", self.tts_result_value, self.test_tts_button)
 
     def _start_connection_test(self, kind: str, result_label: ctk.CTkLabel, button: ctk.CTkButton) -> None:
-        if self.mock_ai_mode_var.get():
-            result_label.configure(text="Mock test: OK", text_color=tokens.COLOR_SUCCESS)
-            self.last_test_time_value.configure(text=self._now_text())
-            return
         validation_message = self._validate_connection_fields(kind)
         if validation_message:
             result_label.configure(text=validation_message, text_color=tokens.COLOR_ERROR)
@@ -442,7 +434,6 @@ class ConfigScreen(ctk.CTkFrame):
                 "max_retry": self._int_or_default(self.max_retry_entry.get(), 3),
                 "retry_backoff_seconds": self._int_or_default(self.retry_backoff_seconds_entry.get(), 30),
                 "enable_resume": self.enable_resume_var.get(),
-                "mock_ai_mode": self.mock_ai_mode_var.get(),
             },
         }
 
@@ -450,9 +441,8 @@ class ConfigScreen(ctk.CTkFrame):
         config = self.get_config()
         llm = config["llm"]
         tts = config["tts"]
-        mock_mode = bool(config["runtime_policy"]["mock_ai_mode"])
-        llm_ready = mock_mode or bool(llm["url_model"] and llm["default_model"] and llm["api_key"])
-        tts_ready = mock_mode or bool(tts["url_tts"] and tts["model_tts"] and tts["api_key"])
+        llm_ready = bool(llm["url_model"] and llm["default_model"] and llm["api_key"])
+        tts_ready = bool(tts["url_tts"] and tts["model_tts"] and tts["api_key"])
         return llm_ready, tts_ready
 
     def _validate_connection_fields(self, kind: str) -> str:

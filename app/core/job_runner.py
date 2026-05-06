@@ -44,8 +44,9 @@ class JobRunner:
         if loaded_state is not None:
             self.job_state = loaded_state
 
+        job_started_at = time.time()
         self._set_job_status(JobStatus.RUNNING)
-        self._append_event("INFO", None, "Job started")
+        self._append_event("INFO", None, "▶ Job bắt đầu", "JOB")
         self._save_checkpoint()
 
         for step in self.job_state.steps:
@@ -71,7 +72,10 @@ class JobRunner:
 
         self.job_state.current_step_id = None
         self._set_job_status(JobStatus.DONE)
-        self._append_event("INFO", None, "Job completed")
+        elapsed = time.time() - job_started_at
+        done_steps = sum(1 for item in self.job_state.steps if item.status == StepStatus.DONE)
+        total_steps = len(self.job_state.steps)
+        self._append_event("INFO", None, f"✓ Job hoàn thành tổng cộng ({elapsed:.1f}s), {done_steps}/{total_steps} steps", "JOB")
         self._save_checkpoint()
         return self.job_state
 
@@ -106,6 +110,7 @@ class JobRunner:
             return
 
         while not self._cancel_requested:
+            step_started_at = time.time()
             step.attempt += 1
             step.status = StepStatus.RUNNING
             step.started_at = _utc_now()
@@ -113,17 +118,18 @@ class JobRunner:
             step.error_code = None
             step.error_message = None
             self._set_job_status(JobStatus.RUNNING)
-            self._append_event("INFO", step.step_id, f"Step attempt {step.attempt} started")
+            self._append_event("INFO", step.step_id, f"▶ Bắt đầu {step.name}")
             self._save_checkpoint()
 
             result = self._execute_handler(handler)
+            elapsed = time.time() - step_started_at
             if result.success:
                 step.status = StepStatus.DONE
                 step.ended_at = _utc_now()
                 step.error_code = None
                 step.error_message = None
                 step.artifacts = result.artifacts
-                self._append_event("INFO", step.step_id, f"Step attempt {step.attempt} done")
+                self._append_event("INFO", step.step_id, f"✓ Hoàn thành ({elapsed:.1f}s)")
                 self._save_checkpoint()
                 return
 
@@ -139,14 +145,14 @@ class JobRunner:
                 self._append_event(
                     "WARN",
                     step.step_id,
-                    f"Step attempt {step.attempt} failed with {error_code}; retry in {backoff:.2f}s",
+                    f"✗ Thất bại ({elapsed:.1f}s): {error_code}; retry/thử lại sau {backoff:.2f}s",
                 )
                 self._save_checkpoint()
                 if backoff > 0:
                     time.sleep(backoff)
                 continue
 
-            self._mark_step_failed(step, error_code, error_message)
+            self._mark_step_failed(step, error_code, error_message, elapsed)
             return
 
     def _execute_handler(self, handler: StepHandler) -> StepResult:
@@ -172,12 +178,13 @@ class JobRunner:
             return StepResult.model_validate(raw_result)
         raise TypeError("Step handler must return StepResult, dict, or None")
 
-    def _mark_step_failed(self, step: StepRecord, error_code: str, error_message: str):
+    def _mark_step_failed(self, step: StepRecord, error_code: str, error_message: str, elapsed: float | None = None):
         step.status = StepStatus.FAILED
         step.ended_at = _utc_now()
         step.error_code = error_code
         step.error_message = error_message
-        self._append_event("ERROR", step.step_id, f"Step failed with {error_code}: {error_message}")
+        duration = "0.0" if elapsed is None else f"{elapsed:.1f}"
+        self._append_event("ERROR", step.step_id, f"✗ Thất bại ({duration}s): {error_message}")
         self._save_checkpoint()
 
     def _mark_job_canceled(self):
@@ -199,12 +206,12 @@ class JobRunner:
         self.job_state.updated_at = _utc_now()
         self.checkpoint.save_state(self.job_state)
 
-    def _append_event(self, level: str, step_id: Optional[str], message: str):
+    def _append_event(self, level: str, step_id: Optional[str], message: str, display_step_id: Optional[str] = None):
         self.checkpoint.append_event(
             EventLogEntry(
                 timestamp=_utc_now(),
                 level=level,
-                step_id=step_id,
+                step_id=display_step_id or step_id,
                 message=message,
                 job_id=self.job_state.job_id,
             )
