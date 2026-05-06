@@ -11,6 +11,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from tkinter import messagebox
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -30,6 +31,8 @@ from app.ui.navigation import NavigationController
 from app.ui.screens import ConfigScreen, CreateVideoScreen, HistoryScreen, JobLogsScreen
 from app.ui.sidebar import SidebarFrame
 from app.ui.topbar import TopBarFrame
+from app.updater import Updater
+from app.version import __version__
 from app.video.prompts import (
     S2_1_SCENE_PLANNING,
     S2_2_VISUAL_SPEC,
@@ -109,7 +112,14 @@ class App(ctk.CTk):
 
         self.sidebar = SidebarFrame(self, on_nav_change=self.show_screen)
         self.sidebar.grid(row=0, column=0, rowspan=2, sticky="nsew")
-        self.topbar = TopBarFrame(self, title=SCREEN_TITLES["create_video"], status="Sẵn sàng", on_open_outputs=self.open_outputs, on_open_config=lambda: self.show_screen("config"))
+        self.topbar = TopBarFrame(
+            self,
+            title=SCREEN_TITLES["create_video"],
+            status="Sẵn sàng",
+            on_open_outputs=self.open_outputs,
+            on_open_config=lambda: self.show_screen("config"),
+            on_check_update=self.check_for_updates,
+        )
         self.topbar.grid(row=0, column=1, sticky="nsew")
         self.content = ctk.CTkFrame(self, fg_color=tokens.COLOR_BACKGROUND, corner_radius=0)
         self.content.grid(row=1, column=1, sticky="nsew")
@@ -703,6 +713,55 @@ class App(ctk.CTk):
         outputs_path = os.path.abspath("outputs")
         os.makedirs(outputs_path, exist_ok=True)
         os.startfile(outputs_path)
+
+    def check_for_updates(self) -> None:
+        """Kiểm tra bản cập nhật mới trong background để không khóa UI."""
+        self.topbar.set_status("Đang chạy")
+        thread = threading.Thread(target=self._check_for_updates_worker, daemon=True)
+        thread.start()
+
+    def _check_for_updates_worker(self) -> None:
+        updater = Updater()
+        update_info = updater.check_for_update()
+        self.after(0, lambda: self._handle_update_check_result(updater, update_info))
+
+    def _handle_update_check_result(self, updater: Updater, update_info: dict[str, Any] | None) -> None:
+        self.topbar.set_status("Sẵn sàng")
+        if not update_info:
+            messagebox.showinfo("Kiểm tra cập nhật", f"Bạn đang dùng phiên bản mới nhất (v{__version__}).")
+            return
+
+        version = update_info.get("version") or update_info.get("tag_name") or "mới"
+        should_update = messagebox.askyesno(
+            "Có phiên bản mới",
+            f"Có phiên bản mới v{version}. Bạn có muốn cập nhật ngay không?",
+        )
+        if not should_update:
+            return
+
+        asset = updater.pick_asset_for_current_platform(update_info.get("assets", []))
+        if not asset:
+            html_url = update_info.get("html_url") or "https://github.com/ngapngap/tao-video-bao-cao-giao-ban/releases"
+            messagebox.showwarning(
+                "Không tìm thấy file cập nhật",
+                f"Release mới chưa có asset phù hợp. Vui lòng tải thủ công tại: {html_url}",
+            )
+            return
+
+        self.topbar.set_status("Đang chạy")
+        threading.Thread(target=self._download_update_worker, args=(updater, asset), daemon=True).start()
+
+    def _download_update_worker(self, updater: Updater, asset: dict[str, Any]) -> None:
+        ok = updater.download_and_replace(str(asset.get("browser_download_url") or ""), str(asset.get("name") or ""))
+        self.after(0, lambda: self._handle_update_download_result(ok))
+
+    def _handle_update_download_result(self, ok: bool) -> None:
+        self.topbar.set_status("Sẵn sàng")
+        if ok:
+            messagebox.showinfo("Cập nhật", "Đã tải bản cập nhật. App sẽ khởi động lại để hoàn tất cập nhật.")
+            self.destroy()
+            return
+        messagebox.showerror("Cập nhật thất bại", "Không tải hoặc cài đặt được bản cập nhật. Vui lòng thử lại sau.")
 
 
 def main() -> None:

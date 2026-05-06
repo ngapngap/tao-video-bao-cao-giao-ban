@@ -27,6 +27,7 @@ class TopBarFrame(ctk.CTkFrame):
         status: str = "Sẵn sàng",
         on_open_outputs: Callable[[], None] | None = None,
         on_open_config: Callable[[], None] | None = None,
+        on_check_update: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(
             master,
@@ -40,6 +41,7 @@ class TopBarFrame(ctk.CTkFrame):
 
         self._on_open_outputs = on_open_outputs or (lambda: None)
         self._on_open_config = on_open_config or (lambda: None)
+        self._on_check_update = on_check_update or (lambda: None)
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=0)
@@ -87,6 +89,22 @@ class TopBarFrame(ctk.CTkFrame):
         )
         self._open_outputs_button.grid(row=0, column=1, padx=(0, tokens.SPACING_SM))
 
+        self._check_update_button = ctk.CTkButton(
+            actions,
+            text="Kiểm tra cập nhật",
+            width=146,
+            height=34,
+            corner_radius=tokens.RADIUS_MD,
+            fg_color=tokens.COLOR_SURFACE,
+            hover_color="#EFF6FF",
+            border_width=tokens.BORDER_WIDTH,
+            border_color=tokens.COLOR_BORDER,
+            text_color=tokens.COLOR_TEXT,
+            font=tokens.FONT_BODY,
+            command=self._on_check_update,
+        )
+        self._check_update_button.grid(row=0, column=2, padx=(0, tokens.SPACING_SM))
+
         self._config_button = ctk.CTkButton(
             actions,
             text="Cấu hình",
@@ -99,7 +117,7 @@ class TopBarFrame(ctk.CTkFrame):
             font=tokens.FONT_BODY_BOLD,
             command=self._on_open_config,
         )
-        self._config_button.grid(row=0, column=2)
+        self._config_button.grid(row=0, column=3)
 
     def set_title(self, title: str) -> None:
         """Cập nhật tiêu đề màn hình hiện tại."""

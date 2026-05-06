@@ -2,10 +2,37 @@
 
 Ứng dụng Python desktop portable dùng để tạo video báo cáo giao ban từ dữ liệu báo cáo.
 
-## Cài đặt
+## Cài đặt nhanh
+
+### Cách 1: Tải bản portable
+
+Tải file mới nhất từ [Releases](https://github.com/ngapngap/tao-video-bao-cao-giao-ban/releases):
 
 ```bash
+# Windows
+curl -L -o BaoCaoGiaoBan-VideoGenerator.exe https://github.com/ngapngap/tao-video-bao-cao-giao-ban/releases/latest/download/BaoCaoGiaoBan-VideoGenerator.exe
+
+# Hoặc dùng PowerShell
+Invoke-WebRequest -Uri "https://github.com/ngapngap/tao-video-bao-cao-giao-ban/releases/latest/download/BaoCaoGiaoBan-VideoGenerator.exe" -OutFile "BaoCaoGiaoBan-VideoGenerator.exe"
+```
+
+### Cách 2: Chạy từ source
+
+```bash
+git clone https://github.com/ngapngap/tao-video-bao-cao-giao-ban.git
+cd tao-video-bao-cao-giao-ban
 pip install -r requirements.txt
+python app/main.py
+```
+
+### Tự động cập nhật
+
+App có tính năng tự kiểm tra phiên bản mới. Khi có bản cập nhật, app sẽ thông báo và tải tự động.
+
+Hoặc kiểm tra thủ công:
+
+```bash
+curl -s https://api.github.com/repos/ngapngap/tao-video-bao-cao-giao-ban/releases/latest | python -c "import sys,json; r=json.load(sys.stdin); print(f'Latest: {r[\"tag_name\"]}')"
 ```
 
 ## Chạy dev
