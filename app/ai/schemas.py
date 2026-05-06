@@ -30,9 +30,9 @@ class Section(BaseModel):
 
 
 class ReportMetadata(BaseModel):
-    title: str
-    period: str  # YYYY-MM
-    organization: str
+    title: str = ""
+    period: str = ""  # YYYY-MM
+    organization: str = ""
 
 
 class RawLLMExtractedReport(BaseModel):

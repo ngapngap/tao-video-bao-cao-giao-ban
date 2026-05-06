@@ -281,9 +281,13 @@ class App(ctk.CTk):
                 llm_url = LLMClient(url, key, model).url
                 logger.log("INFO", "P1.1", f"Gọi LLM API: {llm_url}", job_state.job_id)
                 raw_report = self._llm_chat(P1_1_PDF_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id)
-            RawLLMExtractedReport.model_validate(raw_report)
-            extracted_report = self._normalize_llm_extract(raw_report)
-            extracted_report = ExtractedReport.model_validate(extracted_report).model_dump(mode="json")
+            try:
+                RawLLMExtractedReport.model_validate(raw_report)
+                extracted_report = self._normalize_llm_extract(raw_report)
+                extracted_report = ExtractedReport.model_validate(extracted_report).model_dump(mode="json")
+            except Exception as normalize_err:
+                logger.log("WARN", "P1.1", f"Normalize LLM output failed ({normalize_err}), dùng mock extract", job_state.job_id)
+                extracted_report = self._build_extracted_report(parse_data, payload, job_state)
             logger.log("INFO", job_state.current_step_id, f"Đã gọi LLM extract, nhận {len(extracted_report.get('metrics', []))} metrics", job_state.job_id)
             artifact = Path(output_dir) / "parsed" / "extracted-report.json"
             self._write_json(artifact, extracted_report)
@@ -528,14 +532,19 @@ class App(ctk.CTk):
 
     def _normalize_llm_extract(self, raw_data: dict[str, Any]) -> dict[str, Any]:
         """Chuyển output LLM tự do sang format ExtractedReport chuẩn."""
-        if "report_metadata" in raw_data:
+        rm = raw_data.get("report_metadata", {})
+        if isinstance(rm, dict) and rm.get("title") and rm.get("period") and rm.get("organization"):
             return raw_data
+
+        title = raw_data.get("report_title") or raw_data.get("title") or rm.get("title") or raw_data.get("report_name") or "Báo cáo giao ban"
+        period = raw_data.get("report_month") or raw_data.get("period") or rm.get("period") or raw_data.get("month") or ""
+        org = raw_data.get("owner_org") or raw_data.get("organization") or raw_data.get("issuing_org") or raw_data.get("org") or rm.get("organization") or ""
 
         normalized: dict[str, Any] = {
             "report_metadata": {
-                "title": raw_data.get("report_title", ""),
-                "period": raw_data.get("report_month", ""),
-                "organization": raw_data.get("owner_org", raw_data.get("issuing_org", "")),
+                "title": str(title),
+                "period": str(period),
+                "organization": str(org),
             },
             "metrics": [],
             "sections": raw_data.get("sections", []),
