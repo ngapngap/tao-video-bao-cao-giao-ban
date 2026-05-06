@@ -20,9 +20,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import customtkinter as ctk
 
-from app.ai import ExtractedReport, LLMClient, P1_1_PDF_EXTRACTION, P1_2_WORKFLOW_COMPOSITION, WorkflowOutput
+from app.ai import ExtractedReport, LLMClient, P1_1B_SCREEN_PLANNING, P1_1_CHUNK_EXTRACTION, P1_2_WORKFLOW_COMPOSITION, WorkflowOutput
 from app.ai.schemas import RawLLMExtractedReport
-from app.core import EventLogger, JobRunner, JobState, JobStatus, RetryPolicy, StepRecord, StepResult
+from app.core import ChunkProcessor, EventLogger, JobRunner, JobState, JobStatus, RetryPolicy, StepRecord, StepResult
 from app.core.event_logger import mask_sensitive_text
 from app.pdf.normalizer import DataNormalizer
 from app.pdf.parser import PDFParser
@@ -67,8 +67,9 @@ DEFAULT_STEPS: tuple[tuple[str, str], ...] = (
     ("S1.1", "Chuẩn bị thư mục job"),
     ("S1.2", "Sao chép PDF đầu vào"),
     ("S1.3", "Đọc và chuẩn hóa PDF"),
-    ("P1.1", "Trích xuất số liệu báo cáo"),
-    ("P1.2", "Sinh workflow mới"),
+    ("P1.1", "Trích xuất số liệu báo cáo theo chunk"),
+    ("P1.1b", "Lập kế hoạch screens từ extracted report"),
+    ("P1.2", "Sinh workflow mới theo chunk"),
     ("S2.1", "Lập kế hoạch scene video"),
     ("S2.2", "Tạo visual spec"),
     ("S2.3", "Tạo kịch bản lời đọc TTS"),
@@ -201,6 +202,7 @@ class App(ctk.CTk):
             "S1.2": self._make_copy_pdf_handler(payload),
             "S1.3": self._handle_parse_pdf,
             "P1.1": self._make_extract_report_handler(payload),
+            "P1.1b": self._handle_screen_planning,
             "P1.2": self._make_compose_workflow_handler(payload),
             "S2.1": self._handle_create_scene_plan,
             "S2.2": self._handle_create_visual_spec,
@@ -274,34 +276,43 @@ class App(ctk.CTk):
             start = time.time()
             parse_data = self._read_json(Path(output_dir) / "parsed" / "pdf-parse-result.json")
             total_pages = parse_data.get("total_pages", "?")
-            logger.log("INFO", "P1.1", f"▶ Bắt đầu trích xuất report từ PDF ({total_pages} trang)", job_state.job_id)
-            self._simulate_step_progress(0.5)
-            raw_text = parse_data.get("raw_text") or parse_data.get("raw_text_preview", "")
-            chunks = self._chunk_pdf_text(str(raw_text))
+            raw_text = str(parse_data.get("raw_text") or parse_data.get("raw_text_preview", ""))
+            chunks = self._chunk_pdf_text(raw_text, max_chars=6000)
             url, key, model = self._get_llm_config()
             llm_url = LLMClient(url, key, model).url if url else ""
+            logger.log("INFO", "P1.1", f"▶ Bắt đầu trích xuất report từ PDF ({total_pages} trang)", job_state.job_id)
             logger.log("INFO", "P1.1", f"  LLM: {llm_url or 'EMPTY'} | Model: {model or 'EMPTY'}", job_state.job_id)
-            logger.log("INFO", "P1.1", f"  Input: {len(str(raw_text))} chars, chia thành {len(chunks)} chunk(s)", job_state.job_id)
+            logger.log("INFO", "P1.1", f"  Input: {len(raw_text)} chars, chia thành {len(chunks)} chunk(s)", job_state.job_id)
+            self._simulate_step_progress(0.5)
+
             if not url or not key:
                 logger.log("WARN", "P1.1", "  Thiếu LLM config, dùng mock extract", job_state.job_id)
                 raw_report = self._build_extracted_report(parse_data, payload, job_state)
             else:
-                chunk_reports: list[dict[str, Any]] = []
-                for index, chunk_text in enumerate(chunks, start=1):
-                    logger.log("INFO", "P1.1", f"  Chunk {index}/{len(chunks)}: chuẩn bị payload {len(chunk_text)} chars", job_state.job_id)
+                processor = ChunkProcessor(output_dir, "extract_chunks")
+
+                def process_chunk(chunk_index: int, chunk_text: str) -> dict[str, Any]:
+                    logger.log("INFO", "P1.1", f"  Chunk {chunk_index + 1}/{len(chunks)}: gửi {len(chunk_text)} chars đến LLM", job_state.job_id)
                     input_payload = {
                         "report_month": job_state.report_month,
                         "report_title": payload.get("report_title") or "Báo cáo giao ban",
                         "owner_org": payload.get("owner_org") or "Chưa nhập đơn vị",
-                        "chunk_index": index,
-                        "chunk_count": len(chunks),
-                        "pdf_parse_result": {**parse_data, "raw_text": chunk_text, "raw_text_preview": chunk_text[:2000]},
+                        "chunk_index": chunk_index,
+                        "total_chunks": len(chunks),
+                        "chunk_text": chunk_text,
                     }
-                    logger.log("INFO", "P1.1", "  Đang gửi request đến LLM API... (có thể mất 1-3 phút)", job_state.job_id)
-                    chunk_report = self._llm_chat(P1_1_PDF_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id)
-                    response_chars = len(json.dumps(chunk_report, ensure_ascii=False))
-                    logger.log("INFO", "P1.1", f"  Đã nhận response từ LLM ({response_chars} chars)", job_state.job_id)
-                    chunk_reports.append(chunk_report)
+                    result = self._llm_chat(P1_1_CHUNK_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id)
+                    response_chars = len(json.dumps(result, ensure_ascii=False))
+                    logger.log("INFO", "P1.1", f"  Chunk {chunk_index + 1}/{len(chunks)}: nhận {response_chars} chars", job_state.job_id)
+                    return result
+
+                chunk_reports = processor.process_chunks(
+                    chunks,
+                    process_chunk,
+                    max_retry=int(self.runtime_config.get("runtime_policy", {}).get("max_retry") or 3),
+                    on_progress=lambda i, n, status: logger.log("INFO", "P1.1", f"  Chunk {i + 1}/{n}: {status}", job_state.job_id),
+                )
+                logger.log("INFO", "P1.1", f"  Đang merge {len(chunk_reports)} chunk results...", job_state.job_id)
                 raw_report = self._merge_llm_extracts(chunk_reports)
             try:
                 logger.log("INFO", "P1.1", "  Đang phân tích và chuẩn hóa dữ liệu...", job_state.job_id)
@@ -324,22 +335,54 @@ class App(ctk.CTk):
 
         return handler
 
+    def _handle_screen_planning(self, job_state: JobState, output_dir: str) -> StepResult:
+        logger = self._logger(output_dir)
+        start = time.time()
+        extracted_report = self._read_json(Path(output_dir) / "parsed" / "extracted-report.json")
+        logger.log("INFO", job_state.current_step_id, "▶ Bắt đầu lập kế hoạch screens từ extracted report", job_state.job_id)
+        self._simulate_step_progress(0.5)
+        screen_plan = self._llm_chat(P1_1B_SCREEN_PLANNING, {"report_month": job_state.report_month, "extracted_report": extracted_report}, "P1.1b", logger, job_state.job_id)
+        screens = screen_plan.get("screens", [])
+        if not isinstance(screens, list) or len(screens) < 2:
+            return StepResult(success=False, error_code="SCREEN_PLAN_INVALID", error_message="P1.1b output phải có screens list với intro/closing")
+        artifact = Path(output_dir) / "parsed" / "screen-plan.json"
+        self._write_json(artifact, screen_plan)
+        logger.log("INFO", job_state.current_step_id, f"✓ Hoàn thành: screen-plan có {len(screens)} screens ({time.time() - start:.1f}s)", job_state.job_id)
+        return StepResult(artifacts=[str(artifact)])
+
     def _make_compose_workflow_handler(self, payload: dict[str, str]):
         def handler(job_state: JobState, output_dir: str) -> StepResult:
             logger = self._logger(output_dir)
             start = time.time()
             extracted_report = self._read_json(Path(output_dir) / "parsed" / "extracted-report.json")
+            screen_plan = self._read_json(Path(output_dir) / "parsed" / "screen-plan.json")
             template_path = payload.get("workflow_template") or "workflow.md"
-            logger.log("INFO", job_state.current_step_id, "▶ Bắt đầu sinh workflow từ extracted report và workflow template", job_state.job_id)
+            logger.log("INFO", job_state.current_step_id, "▶ Bắt đầu sinh workflow từ extracted report và workflow template theo chunk", job_state.job_id)
             self._simulate_step_progress(0.5)
             template_content = Path(template_path).read_text(encoding="utf-8")
-            input_payload = {
-                "report_month": job_state.report_month,
-                "job_id": job_state.job_id,
-                "extracted_report": extracted_report,
-                "workflow_template_md": template_content,
-            }
-            ai_workflow = self._llm_chat(P1_2_WORKFLOW_COMPOSITION, input_payload, "P1.2", logger, job_state.job_id)
+            workflow_chunks = self._chunk_workflow_sections(extracted_report, screen_plan)
+            processor = ChunkProcessor(output_dir, "workflow_chunks")
+
+            def process_workflow_chunk(chunk_index: int, chunk: dict[str, Any]) -> dict[str, Any]:
+                logger.log("INFO", "P1.2", f"  Workflow chunk {chunk_index + 1}/{len(workflow_chunks)}: gửi {len(chunk.get('metrics', []))} metrics", job_state.job_id)
+                input_payload = {
+                    "report_month": job_state.report_month,
+                    "job_id": job_state.job_id,
+                    "chunk_index": chunk_index,
+                    "total_chunks": len(workflow_chunks),
+                    "extracted_report_chunk": chunk,
+                    "screen_plan": screen_plan,
+                    "workflow_template_md": template_content,
+                }
+                return self._llm_chat(P1_2_WORKFLOW_COMPOSITION, input_payload, "P1.2", logger, job_state.job_id)
+
+            workflow_parts = processor.process_chunks(
+                workflow_chunks,
+                process_workflow_chunk,
+                max_retry=int(self.runtime_config.get("runtime_policy", {}).get("max_retry") or 3),
+                on_progress=lambda i, n, status: logger.log("INFO", "P1.2", f"  Workflow chunk {i + 1}/{n}: {status}", job_state.job_id),
+            )
+            ai_workflow = self._merge_workflow_chunks(workflow_parts, job_state.report_month, job_state.job_id)
             workflow = WorkflowComposer(template_path).compose_from_ai_output(ai_workflow, job_state.report_month, job_state.job_id)
             workflow = WorkflowOutput.model_validate(workflow).model_dump(mode="json")
             logger.log("INFO", job_state.current_step_id, f"Đã gọi LLM compose workflow, {len(workflow.get('scenes', []))} scenes", job_state.job_id)
@@ -706,6 +749,45 @@ class App(ctk.CTk):
                     merged[key] = {**merged[key], **value}
                 else:
                     merged[f"chunk_{len(merged)}_{key}"] = value
+        return merged
+
+    def _chunk_workflow_sections(self, extracted_report: dict[str, Any], screen_plan: dict[str, Any], max_items: int = 5) -> list[dict[str, Any]]:
+        metrics = list(extracted_report.get("metrics", []))
+        sections = list(extracted_report.get("sections", []))
+        if not metrics and not sections:
+            return [{"report_metadata": extracted_report.get("report_metadata", {}), "metrics": [], "sections": [], "screens": screen_plan.get("screens", [])}]
+        chunks: list[dict[str, Any]] = []
+        for start in range(0, max(len(metrics), 1), max_items):
+            chunks.append(
+                {
+                    "report_metadata": extracted_report.get("report_metadata", {}),
+                    "metrics": metrics[start : start + max_items],
+                    "sections": sections[start : start + max_items],
+                    "screens": screen_plan.get("screens", []),
+                }
+            )
+        return chunks
+
+    def _merge_workflow_chunks(self, workflow_parts: list[dict[str, Any]], report_month: str, job_id: str) -> dict[str, Any]:
+        merged: dict[str, Any] = {
+            "workflow_metadata": {"template_version": "wf.v2", "report_month": report_month, "job_id": job_id},
+            "video_settings": {"fps": 30, "resolution": "1920x1080", "aspect_ratio": "16:9"},
+            "scenes": [],
+        }
+        seen_scene_ids: set[str] = set()
+        for part in workflow_parts:
+            if isinstance(part.get("workflow_metadata"), dict):
+                merged["workflow_metadata"].update(part["workflow_metadata"])
+            if isinstance(part.get("video_settings"), dict):
+                merged["video_settings"].update(part["video_settings"])
+            for scene in part.get("scenes", []):
+                if not isinstance(scene, dict):
+                    continue
+                scene_id = str(scene.get("scene_id") or "")
+                if scene_id in seen_scene_ids:
+                    continue
+                seen_scene_ids.add(scene_id)
+                merged["scenes"].append(scene)
         return merged
 
     def _llm_chat(self, system_prompt: str, input_payload: dict[str, Any], step_id: str, logger: EventLogger, job_id: str) -> dict[str, Any]:
