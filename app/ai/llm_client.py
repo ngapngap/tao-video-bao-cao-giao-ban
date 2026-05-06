@@ -23,6 +23,29 @@ class LLMClient:
         self.timeout = timeout
         self._supports_json_mode = supports_json_mode
 
+    def _parse_sse_response(self, response_text: str) -> str:
+        """Parse SSE stream, concatenate all content chunks."""
+        content_parts: list[str] = []
+        for line in response_text.split("\n"):
+            line = line.strip()
+            if not line.startswith("data: "):
+                continue
+            data_str = line[6:]
+            if data_str == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data_str)
+                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                if "content" in delta and delta["content"]:
+                    content_parts.append(delta["content"])
+            except json.JSONDecodeError:
+                continue
+        return "".join(content_parts)
+
+    def _strip_thinking_tags(self, content: str) -> str:
+        """Remove ...</think> tags from response."""
+        return re.sub(r".*?</think>", "", content, flags=re.DOTALL).strip()
+
     def _extract_json_from_content(self, content: str | dict[str, Any] | list[Any]) -> dict[str, Any]:
         """Extract JSON từ response content, handle nhiều format."""
         if isinstance(content, dict):
@@ -32,7 +55,7 @@ class LLMClient:
         if not isinstance(content, str):
             raise ValueError(f"LLM response content has unsupported type: {type(content).__name__}")
 
-        stripped_content = content.strip()
+        stripped_content = self._strip_thinking_tags(content)
 
         if not stripped_content:
             raise ValueError("LLM response content is empty")
@@ -104,6 +127,7 @@ class LLMClient:
                 {"role": "user", "content": user_content},
             ],
             "temperature": temperature,
+            "stream": False,
         }
         if self._supports_json_mode:
             payload["response_format"] = {"type": "json_object"}
@@ -114,8 +138,12 @@ class LLMClient:
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.post(self.url, headers=headers, json=payload)
                 response.raise_for_status()
-                data = response.json()
-                raw_content = data["choices"][0]["message"]["content"]
+                content_type = response.headers.get("content-type", "")
+                if "text/event-stream" in content_type:
+                    raw_content = self._parse_sse_response(response.text)
+                else:
+                    data = response.json()
+                    raw_content = data["choices"][0]["message"]["content"]
                 logger.debug("Raw LLM response content preview: %s", str(raw_content)[:500])
                 return self._extract_json_from_content(raw_content)
         except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
@@ -167,6 +195,7 @@ class LLMClient:
                 "model": self.model,
                 "messages": [{"role": "user", "content": "Trả lời đúng một chữ: OK"}],
                 "max_tokens": 8,
+                "stream": False,
             }
             with httpx.Client(timeout=10.0) as client:
                 response = client.post(self.url, headers=headers, json=payload)
