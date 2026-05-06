@@ -278,7 +278,7 @@ class App(ctk.CTk):
             parse_data = self._read_json(Path(output_dir) / "parsed" / "pdf-parse-result.json")
             total_pages = parse_data.get("total_pages", "?")
             raw_text = str(parse_data.get("raw_text") or parse_data.get("raw_text_preview", ""))
-            chunks = self._chunk_pdf_text(raw_text, max_chars=6000)
+            chunks = self._chunk_pdf_text(raw_text, max_chars=4000)
             url, key, model = self._get_llm_config()
             llm_url = LLMClient(url, key, model).url if url else ""
             logger.log("INFO", "P1.1", f"▶ Bắt đầu trích xuất report từ PDF ({total_pages} trang)", job_state.job_id)
@@ -302,7 +302,7 @@ class App(ctk.CTk):
                         "total_chunks": len(chunks),
                         "chunk_text": chunk_text,
                     }
-                    result = self._llm_chat(P1_1_CHUNK_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id, max_tokens=4000)
+                    result = self._llm_chat(P1_1_CHUNK_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id, max_tokens=6000)
                     response_chars = len(json.dumps(result, ensure_ascii=False))
                     logger.log("INFO", "P1.1", f"  Chunk {chunk_index + 1}/{len(chunks)}: nhận {response_chars} chars", job_state.job_id)
                     return result
@@ -368,35 +368,48 @@ class App(ctk.CTk):
             logger.log("INFO", job_state.current_step_id, f"  Input artifacts: {screen_plan_path}, {extracted_report_path}", job_state.job_id)
             self._simulate_step_progress(0.5)
             template_content = Path(template_path).read_text(encoding="utf-8")
-            workflow_chunks = self._chunk_workflow_sections(extracted_report, screen_plan)
-            processor = ChunkProcessor(output_dir, "workflow_chunks")
 
-            def process_workflow_chunk(chunk_index: int, chunk: dict[str, Any]) -> dict[str, Any]:
-                logger.log("INFO", "P1.2", f"  Workflow chunk {chunk_index + 1}/{len(workflow_chunks)}: gửi {len(chunk.get('metrics', []))} metrics", job_state.job_id)
-                input_payload = {
-                    "report_month": job_state.report_month,
-                    "job_id": job_state.job_id,
-                    "chunk_index": chunk_index,
-                    "total_chunks": len(workflow_chunks),
-                    "extracted_report_chunk": chunk,
-                    "screen_plan": screen_plan,
-                    "workflow_template_md": template_content,
-                }
-                return self._llm_chat(P1_2_WORKFLOW_COMPOSITION, input_payload, "P1.2", logger, job_state.job_id, max_tokens=4000)
+            try:
+                workflow_chunks = self._chunk_workflow_sections(extracted_report, screen_plan)
+                processor = ChunkProcessor(output_dir, "workflow_chunks")
 
-            workflow_parts = processor.process_chunks(
-                workflow_chunks,
-                process_workflow_chunk,
-                max_retry=int(self.runtime_config.get("runtime_policy", {}).get("max_retry") or 3),
-                parallel=True,
-                max_workers=min(len(workflow_chunks), 2),
-                on_progress=lambda i, n, status: logger.log("INFO", "P1.2", f"  Workflow chunk {i + 1}/{n}: {status}", job_state.job_id),
-            )
-            ai_workflow = self._merge_workflow_chunks(workflow_parts, job_state.report_month, job_state.job_id)
+                def process_workflow_chunk(chunk_index: int, chunk: dict[str, Any]) -> dict[str, Any]:
+                    logger.log("INFO", "P1.2", f"  Workflow chunk {chunk_index + 1}/{len(workflow_chunks)}: gửi {len(chunk.get('metrics', []))} metrics", job_state.job_id)
+                    input_payload = {
+                        "report_month": job_state.report_month,
+                        "job_id": job_state.job_id,
+                        "chunk_index": chunk_index,
+                        "total_chunks": len(workflow_chunks),
+                        "extracted_report_chunk": chunk,
+                        "screen_plan": screen_plan,
+                        "workflow_template_md": template_content,
+                    }
+                    return self._llm_chat(P1_2_WORKFLOW_COMPOSITION, input_payload, "P1.2", logger, job_state.job_id, max_tokens=4000)
+
+                workflow_parts = processor.process_chunks(
+                    workflow_chunks,
+                    process_workflow_chunk,
+                    max_retry=int(self.runtime_config.get("runtime_policy", {}).get("max_retry") or 3),
+                    parallel=True,
+                    max_workers=min(len(workflow_chunks), 2),
+                    on_progress=lambda i, n, status: logger.log("INFO", "P1.2", f"  Workflow chunk {i + 1}/{n}: {status}", job_state.job_id),
+                )
+                ai_workflow = self._merge_workflow_chunks(workflow_parts, job_state.report_month, job_state.job_id)
+                logger.log("INFO", "P1.2", "  LLM workflow composition thành công", job_state.job_id)
+            except Exception as exc:
+                safe_message = mask_sensitive_text(str(exc))
+                logger.log("WARN", "P1.2", f"  LLM workflow failed ({safe_message}), fallback từ screen-plan", job_state.job_id)
+                logger.log("INFO", "P1.2", "  Fallback workflow từ screen-plan", job_state.job_id)
+                ai_workflow = self._build_workflow_from_screen_plan(screen_plan, extracted_report, job_state)
+
             workflow = WorkflowComposer(template_path).compose_from_ai_output(ai_workflow, job_state.report_month, job_state.job_id)
             workflow = WorkflowOutput.model_validate(workflow).model_dump(mode="json")
-            logger.log("INFO", job_state.current_step_id, f"Đã gọi LLM compose workflow, {len(workflow.get('scenes', []))} scenes", job_state.job_id)
             validation = WorkflowValidator().validate(workflow, extracted_report)
+            if not validation.passed:
+                logger.log("WARN", "P1.2", f"  Workflow validation failed, auto-fix: {validation.errors[:3]}", job_state.job_id)
+                workflow = self._auto_fix_workflow(workflow)
+                workflow = WorkflowOutput.model_validate(workflow).model_dump(mode="json")
+                validation = WorkflowValidator().validate(workflow, extracted_report)
             workflow_path = Path(output_dir) / "workflow" / "generated-workflow.json"
             named_workflow_path = Path(output_dir) / "workflow" / f"workflow-{job_state.report_month}-{job_state.job_id}.json"
             workflow_md_path = Path(output_dir) / "workflow" / f"workflow-{job_state.report_month}-{job_state.job_id}.md"
@@ -799,6 +812,87 @@ class App(ctk.CTk):
                 seen_scene_ids.add(scene_id)
                 merged["scenes"].append(scene)
         return merged
+
+    def _build_workflow_from_screen_plan(self, screen_plan: dict[str, Any], extracted_report: dict[str, Any], job_state: JobState) -> dict[str, Any]:
+        """Fallback: tạo workflow từ screen-plan khi LLM fail."""
+        scenes: list[dict[str, Any]] = []
+        for screen in screen_plan.get("screens", []):
+            if not isinstance(screen, dict):
+                continue
+            screen_id = str(screen.get("screen_id") or f"scene_{len(scenes) + 1:02d}")
+            screen_type = str(screen.get("screen_type") or "")
+            scene_type = screen_type if screen_type in {"intro", "closing"} else "content"
+            if screen_id.startswith("intro") or screen_id.startswith("screen_intro"):
+                scene_type = "intro"
+            elif screen_id.startswith("closing") or screen_id.startswith("screen_closing"):
+                scene_type = "closing"
+            scenes.append(
+                {
+                    "scene_id": screen_id,
+                    "scene_type": scene_type,
+                    "title": str(screen.get("title") or ""),
+                    "source_data_keys": screen.get("data_keys") if isinstance(screen.get("data_keys"), list) else [],
+                    "tts": {"enabled": True, "text": str(screen.get("tts_text_draft") or ""), "voice": "vi-VN-NamMinhNeural"},
+                    "duration_policy": {"mode": "tts_first", "min_seconds": 4, "max_seconds": 15},
+                }
+            )
+        workflow = {
+            "workflow_metadata": {"template_version": "wf.v2", "report_month": job_state.report_month, "job_id": job_state.job_id},
+            "video_settings": {"fps": 30, "resolution": "1920x1080", "aspect_ratio": "16:9"},
+            "scenes": scenes,
+        }
+        return self._auto_fix_workflow(workflow)
+
+    def _auto_fix_workflow(self, workflow: dict[str, Any]) -> dict[str, Any]:
+        """Auto-fix workflow thiếu intro/closing."""
+        scenes = workflow.get("scenes", [])
+        if not isinstance(scenes, list):
+            scenes = []
+        if not scenes:
+            scenes = [
+                {
+                    "scene_id": "scene_intro",
+                    "scene_type": "intro",
+                    "title": "Giới thiệu",
+                    "source_data_keys": [],
+                    "tts": {"enabled": True, "text": "Xin chào, đây là báo cáo giao ban.", "voice": "vi-VN-NamMinhNeural"},
+                    "duration_policy": {"mode": "tts_first", "min_seconds": 4, "max_seconds": 10},
+                },
+                {
+                    "scene_id": "scene_closing",
+                    "scene_type": "closing",
+                    "title": "Kết thúc",
+                    "source_data_keys": [],
+                    "tts": {"enabled": False, "text": "", "voice": "vi-VN-NamMinhNeural"},
+                    "duration_policy": {"mode": "fixed", "min_seconds": 3, "max_seconds": 6},
+                },
+            ]
+        else:
+            if scenes[0].get("scene_type") != "intro":
+                scenes.insert(
+                    0,
+                    {
+                        "scene_id": "scene_intro",
+                        "scene_type": "intro",
+                        "title": "Giới thiệu",
+                        "source_data_keys": [],
+                        "tts": {"enabled": True, "text": "Xin chào, đây là báo cáo giao ban.", "voice": "vi-VN-NamMinhNeural"},
+                        "duration_policy": {"mode": "tts_first", "min_seconds": 4, "max_seconds": 10},
+                    },
+                )
+            if scenes[-1].get("scene_type") != "closing":
+                scenes.append(
+                    {
+                        "scene_id": "scene_closing",
+                        "scene_type": "closing",
+                        "title": "Kết thúc",
+                        "source_data_keys": [],
+                        "tts": {"enabled": False, "text": "", "voice": "vi-VN-NamMinhNeural"},
+                        "duration_policy": {"mode": "fixed", "min_seconds": 3, "max_seconds": 6},
+                    }
+                )
+        workflow["scenes"] = scenes
+        return workflow
 
     def _llm_chat(self, system_prompt: str, input_payload: dict[str, Any], step_id: str, logger: EventLogger, job_id: str, max_tokens: int = 4000) -> dict[str, Any]:
         try:

@@ -5,12 +5,12 @@ Trả JSON với: report_metadata (title, period, organization), metrics (list),
 Mỗi metric: metric_key, metric_name, value, unit, citations (page_no, source_snippet).
 Không bịa số. Chỉ JSON."""
 
-P1_1_CHUNK_EXTRACTION = """Phân tích MỘT PHẦN đoạn văn bản báo cáo BHXH (chunk {chunk_index}/{total_chunks}). Trích xuất số liệu.
-Trả JSON object ngắn gọn với key metrics, sections, warnings.
+P1_1_CHUNK_EXTRACTION = """Phân tích MỘT PHẦN đoạn văn bản báo cáo BHXH (chunk {chunk_index}/{total_chunks}). Trích xuất TẤT CẢ số liệu có cấu trúc tìm thấy trong chunk.
+Trả JSON object với key metrics, sections, warnings.
 Mỗi metric: metric_key, metric_name, value, unit, citations.
 Mỗi citation: page_no, source_snippet, confidence; citations là list.
-TỐI ĐA 10 metrics. Nếu nhiều hơn, chỉ lấy số liệu quan trọng nhất.
-Sections tối đa 3 item, chỉ ghi summary rất ngắn.
+Trích xuất đầy đủ, không bỏ sót số liệu trong chunk. Ưu tiên đầy đủ hơn là ngắn gọn.
+Sections ghi các phần diễn giải quan trọng liên quan đến số liệu trong chunk.
 Không bịa số liệu. Chỉ dùng số liệu có trong chunk.
 Chỉ JSON object, không markdown, không giải thích.
 Nếu không có số liệu: {"metrics": [], "sections": [], "warnings": []} (metrics=[])."""
