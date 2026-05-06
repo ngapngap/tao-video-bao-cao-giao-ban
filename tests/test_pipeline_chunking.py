@@ -35,6 +35,10 @@ def test_prompt_contracts_include_chunk_resume_and_screen_planning_requirements(
     assert "MỘT PHẦN" in P1_1_CHUNK_EXTRACTION
     assert "chunk {chunk_index}/{total_chunks}" in P1_1_CHUNK_EXTRACTION
     assert "Không bịa số liệu" in P1_1_CHUNK_EXTRACTION
+    assert "metrics=[]" in P1_1_CHUNK_EXTRACTION
+    assert "citations là list" in P1_1_CHUNK_EXTRACTION
+    assert "source_snippet" in P1_1_CHUNK_EXTRACTION
+    assert "confidence" in P1_1_CHUNK_EXTRACTION
     assert "screen đầu tiên là intro" in P1_1B_SCREEN_PLANNING
     assert "screen cuối cùng là closing" in P1_1B_SCREEN_PLANNING
 

@@ -15,12 +15,14 @@ import glob
 import json
 import os
 import sys
+from pathlib import Path
 
 import httpx
 
 
 def main() -> int:
-    url = os.environ.get("LLM_EXTRACT_URL", "").strip()
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    url = os.environ.get("LLM_EXTRACT_URL", "").strip().rstrip("/")
     key = os.environ.get("LLM_EXTRACT_KEY", "").strip()
     model = os.environ.get("LLM_EXTRACT_MODEL", "").strip()
 
@@ -28,12 +30,25 @@ def main() -> int:
         print("Thiếu config. Cần set LLM_EXTRACT_URL, LLM_EXTRACT_KEY, LLM_EXTRACT_MODEL.")
         return 2
 
+    if not url.endswith("/chat/completions"):
+        url = f"{url}/chat/completions"
+
+    pdf_path = os.environ.get(
+        "LLM_EXTRACT_PDF",
+        "outputs/202603/20260506-033202/input/2026 - Báo cáo tháng 3 fn.pdf",
+    )
     parse_files = sorted(glob.glob("outputs/*/*/parsed/pdf-parse-result.json"), reverse=True)
+    raw_text = ""
     if parse_files:
         with open(parse_files[0], "r", encoding="utf-8") as f:
             parse_data = json.load(f)
         raw_text = str(parse_data.get("raw_text", ""))[:8000]
-    else:
+    if not raw_text.strip() and os.path.exists(pdf_path):
+        from app.pdf.normalizer import DataNormalizer
+        from app.pdf.parser import PDFParser
+
+        raw_text = DataNormalizer.normalize_text(PDFParser(pdf_path).parse().raw_text)[:8000]
+    if not raw_text.strip():
         raw_text = "Test text"
 
     payload = {
