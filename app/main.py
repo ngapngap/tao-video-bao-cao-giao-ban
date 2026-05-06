@@ -791,11 +791,15 @@ class App(ctk.CTk):
             return {}
         merged: dict[str, Any] = {"metrics": [], "sections": [], "warnings": []}
         for report in chunk_reports:
+            if isinstance(report.get("items"), list) and not isinstance(report.get("metrics"), list):
+                report = {**report, "metrics": report["items"]}
             for key, value in report.items():
                 if key == "warnings" and isinstance(value, list):
                     merged["warnings"].extend(value)
                 elif key == "sections" and isinstance(value, list):
                     merged["sections"].extend(value)
+                elif key == "items" and isinstance(value, list):
+                    merged["metrics"].extend(item for item in value if isinstance(item, dict))
                 elif key == "metrics" and isinstance(value, list):
                     merged["metrics"].extend(value)
                 elif key not in merged or merged.get(key) in (None, "", [], {}):
