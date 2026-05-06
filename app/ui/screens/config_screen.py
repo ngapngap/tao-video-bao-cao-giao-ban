@@ -15,6 +15,9 @@ from app.ui import tokens
 from app.video.remotion_handoff import TTSGenerator
 
 DEFAULT_LLM_URL = "http://10.48.240.50:20128/v1"
+DEFAULT_LLM_MODEL = "minimax/MiniMax-M2.7"
+DEFAULT_TTS_URL = "http://10.48.240.50:20128/v1"
+DEFAULT_TTS_MODEL = "edge-tts/vi-VN-NamMinhNeural"
 MODEL_CREDENTIAL_ID = "tao-video-bao-cao/model/default"
 TTS_CREDENTIAL_ID = "tao-video-bao-cao/tts/default"
 
@@ -72,8 +75,8 @@ class ConfigScreen(ctk.CTkFrame):
 
     def _build_tts_card(self) -> None:
         self._build_card_heading(self.tts_card, "Giọng đọc TTS", row=0)
-        self.url_tts_entry, self.url_tts_error = self._build_entry_field(self.tts_card, row=1, label="URL TTS", placeholder="https://api.tts-service.com")
-        self.model_tts_entry, self.model_tts_error = self._build_entry_field(self.tts_card, row=2, label="Model TTS", placeholder="tts-1")
+        self.url_tts_entry, self.url_tts_error = self._build_entry_field(self.tts_card, row=1, label="URL TTS", placeholder=DEFAULT_TTS_URL)
+        self.model_tts_entry, self.model_tts_error = self._build_entry_field(self.tts_card, row=2, label="Model TTS", placeholder=DEFAULT_TTS_MODEL)
         self.apikey_tts_entry, self.apikey_tts_error = self._build_key_field(self.tts_card, row=3, label="API key TTS", toggle_command=self.toggle_tts_key)
         self.voice_entry, _ = self._build_entry_field(self.tts_card, row=4, label="Giọng đọc (tùy chọn)", placeholder="vi-VN-NamMinhNeural")
         self.credential_id_tts_entry, _ = self._build_entry_field(self.tts_card, row=5, label="Credential ID TTS", placeholder="Chưa lưu", readonly=True)
@@ -158,12 +161,12 @@ class ConfigScreen(ctk.CTkFrame):
         frame.grid_columnconfigure(0, weight=1)
         field_label = ctk.CTkLabel(frame, text=label, font=tokens.FONT_BODY_BOLD, text_color=tokens.COLOR_TEXT, anchor="w")
         field_label.grid(row=0, column=0, sticky="ew", pady=(0, tokens.SPACING_XS))
-        combo = ctk.CTkComboBox(frame, height=36, corner_radius=tokens.RADIUS_MD, border_width=tokens.BORDER_WIDTH, border_color=tokens.COLOR_BORDER, fg_color=tokens.COLOR_SURFACE, button_color=tokens.COLOR_SURFACE, button_hover_color=tokens.COLOR_BACKGROUND, dropdown_fg_color=tokens.COLOR_SURFACE, dropdown_hover_color=tokens.COLOR_BACKGROUND, text_color=tokens.COLOR_TEXT, dropdown_text_color=tokens.COLOR_TEXT, font=tokens.FONT_BODY, values=[self.model_dropdown_placeholder], state="normal")
+        combo = ctk.CTkComboBox(frame, height=36, corner_radius=tokens.RADIUS_MD, border_width=tokens.BORDER_WIDTH, border_color=tokens.COLOR_BORDER, fg_color=tokens.COLOR_SURFACE, button_color=tokens.COLOR_SURFACE, button_hover_color=tokens.COLOR_BACKGROUND, dropdown_fg_color=tokens.COLOR_SURFACE, dropdown_hover_color=tokens.COLOR_BACKGROUND, text_color=tokens.COLOR_TEXT, dropdown_text_color=tokens.COLOR_TEXT, font=tokens.FONT_BODY, values=[DEFAULT_LLM_MODEL], state="normal")
         combo.grid(row=1, column=0, sticky="ew")
-        combo.set(self.model_dropdown_placeholder)
+        combo.set(DEFAULT_LLM_MODEL)
         combo.bind("<FocusIn>", self._on_model_dropdown_focus)
         combo.bind("<Button-1>", self._on_model_dropdown_focus)
-        entry = ctk.CTkEntry(frame, height=36, corner_radius=tokens.RADIUS_MD, border_width=tokens.BORDER_WIDTH, border_color=tokens.COLOR_BORDER, fg_color=tokens.COLOR_SURFACE, text_color=tokens.COLOR_TEXT, placeholder_text="Nhập model name thủ công", font=tokens.FONT_BODY)
+        entry = ctk.CTkEntry(frame, height=36, corner_radius=tokens.RADIUS_MD, border_width=tokens.BORDER_WIDTH, border_color=tokens.COLOR_BORDER, fg_color=tokens.COLOR_SURFACE, text_color=tokens.COLOR_TEXT, placeholder_text=DEFAULT_LLM_MODEL, font=tokens.FONT_BODY)
         entry.grid(row=1, column=0, sticky="ew")
         entry.grid_remove()
         error_label = ctk.CTkLabel(frame, text="", font=tokens.FONT_SMALL, text_color=tokens.COLOR_ERROR, anchor="w")
@@ -274,8 +277,8 @@ class ConfigScreen(ctk.CTkFrame):
     def reset_form(self) -> None:
         self._set_entry_value(self.url_model_entry, DEFAULT_LLM_URL)
         self._reset_model_selector()
-        self._set_entry_value(self.url_tts_entry, "")
-        self._set_entry_value(self.model_tts_entry, "")
+        self._set_entry_value(self.url_tts_entry, DEFAULT_TTS_URL)
+        self._set_entry_value(self.model_tts_entry, DEFAULT_TTS_MODEL)
         self._set_entry_value(self.voice_entry, "")
         self._set_entry_value(self.step_timeout_seconds_entry, "600")
         self._set_entry_value(self.max_retry_entry, "3")
@@ -494,8 +497,8 @@ class ConfigScreen(ctk.CTkFrame):
         self._clear_entry(self.default_model_entry)
         self.default_model_entry.configure(border_color=tokens.COLOR_BORDER)
         self.default_model_combo.grid()
-        self.default_model_combo.configure(values=[self.model_dropdown_placeholder], state="normal", border_color=tokens.COLOR_BORDER)
-        self.default_model_combo.set(self.model_dropdown_placeholder)
+        self.default_model_combo.configure(values=[DEFAULT_LLM_MODEL], state="normal", border_color=tokens.COLOR_BORDER)
+        self.default_model_combo.set(DEFAULT_LLM_MODEL)
         self.default_model_error.configure(text="")
         self.model_fetch_in_progress = False
         self._last_fetch_url = ""
