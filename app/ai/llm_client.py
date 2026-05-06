@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class LLMClient:
     """Client gọi OpenAI-compatible API."""
 
-    def __init__(self, url: str, api_key: str, model: str, timeout: float = 600.0, supports_json_mode: bool = False):
+    def __init__(self, url: str, api_key: str, model: str, timeout: float = 180.0, supports_json_mode: bool = False):
         base_url = url.rstrip("/")
         self.url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
         self.api_key = api_key
@@ -135,6 +135,7 @@ class LLMClient:
         raw_content: str | dict[str, Any] | list[Any] | None = None
         response: httpx.Response | None = None
         try:
+            logger.info("LLM request: url=%s, model=%s, content_length=%s", self.url, self.model, len(user_content))
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.post(self.url, headers=headers, json=payload)
                 response.raise_for_status()

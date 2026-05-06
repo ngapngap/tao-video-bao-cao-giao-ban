@@ -174,7 +174,7 @@ class App(ctk.CTk):
             retry_policy=RetryPolicy(
                 max_retry=int(runtime_policy.get("max_retry") or 3),
                 backoff_seconds=float(runtime_policy.get("retry_backoff_seconds") or 30),
-                step_timeout=float(runtime_policy.get("step_timeout_seconds") or 600),
+                step_timeout=float(runtime_policy.get("step_timeout_seconds") or 180),
             ),
         )
         self._register_job_step_handlers(self.active_runner, payload)
@@ -272,7 +272,15 @@ class App(ctk.CTk):
                 "owner_org": payload.get("owner_org") or "Chưa nhập đơn vị",
                 "pdf_parse_result": {**parse_data, "raw_text": raw_text},
             }
-            raw_report = self._llm_chat(P1_1_PDF_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id)
+            url, key, model = self._get_llm_config()
+            logger.log("INFO", "P1.1", f"LLM config: url={url}, model={model}, key={'***' if key else 'EMPTY'}", job_state.job_id)
+            if not url or not key:
+                logger.log("WARN", "P1.1", "Thiếu LLM config, dùng mock extract", job_state.job_id)
+                raw_report = self._build_extracted_report(parse_data, payload, job_state)
+            else:
+                llm_url = LLMClient(url, key, model).url
+                logger.log("INFO", "P1.1", f"Gọi LLM API: {llm_url}", job_state.job_id)
+                raw_report = self._llm_chat(P1_1_PDF_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id)
             RawLLMExtractedReport.model_validate(raw_report)
             extracted_report = self._normalize_llm_extract(raw_report)
             extracted_report = ExtractedReport.model_validate(extracted_report).model_dump(mode="json")
@@ -572,14 +580,19 @@ class App(ctk.CTk):
         logger.log("INFO", step_id, f"[{step_id}] Đã gọi LLM thật và nhận JSON keys={list(result.keys())[:8]}", job_state.job_id)
         return result
 
-    def _llm_client(self) -> LLMClient:
+    def _get_llm_config(self) -> tuple[str, str, str]:
+        """Lấy LLM config từ app state."""
         llm_config = self.runtime_config.get("llm", {})
         url = str(llm_config.get("url_model") or "")
-        api_key = str(llm_config.get("api_key") or "")
+        api_key = str(llm_config.get("apikey_model") or llm_config.get("api_key") or "")
         model = str(llm_config.get("default_model") or "")
+        return url, api_key, model
+
+    def _llm_client(self) -> LLMClient:
+        url, api_key, model = self._get_llm_config()
         if not url or not api_key or not model:
             raise ValueError("Thiếu cấu hình LLM URL/model/API key")
-        timeout = float(self.runtime_config.get("runtime_policy", {}).get("step_timeout_seconds") or 600)
+        timeout = float(self.runtime_config.get("runtime_policy", {}).get("step_timeout_seconds") or 180)
         return LLMClient(url, api_key, model, timeout=timeout)
 
     def _tts_generator(self, output_dir: str) -> TTSGenerator:
@@ -590,7 +603,7 @@ class App(ctk.CTk):
             tts_api_key=str(tts_config.get("api_key") or ""),
             tts_model=str(tts_config.get("model_tts") or ""),
             mock_mode=False,
-            timeout=float(self.runtime_config.get("runtime_policy", {}).get("step_timeout_seconds") or 600),
+            timeout=float(self.runtime_config.get("runtime_policy", {}).get("step_timeout_seconds") or 180),
         )
 
     def _mock_ai_mode(self) -> bool:
@@ -622,9 +635,9 @@ class App(ctk.CTk):
 
     def _default_runtime_config(self) -> dict[str, Any]:
         return {
-            "llm": {"url_model": "", "default_model": "", "api_key": "", "credential_id_model": ""},
+            "llm": {"url_model": "", "default_model": "", "api_key": "", "apikey_model": "", "credential_id_model": ""},
             "tts": {"url_tts": "", "model_tts": "", "voice": "", "api_key": "", "credential_id_tts": ""},
-            "runtime_policy": {"step_timeout_seconds": 600, "max_retry": 3, "retry_backoff_seconds": 30, "enable_resume": True},
+            "runtime_policy": {"step_timeout_seconds": 180, "max_retry": 3, "retry_backoff_seconds": 30, "enable_resume": True},
         }
 
     def _simulate_step_progress(self, seconds: float) -> None:
