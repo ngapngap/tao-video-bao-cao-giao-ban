@@ -301,7 +301,7 @@ class App(ctk.CTk):
                         "total_chunks": len(chunks),
                         "chunk_text": chunk_text,
                     }
-                    result = self._llm_chat(P1_1_CHUNK_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id)
+                    result = self._llm_chat(P1_1_CHUNK_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id, max_tokens=2000)
                     response_chars = len(json.dumps(result, ensure_ascii=False))
                     logger.log("INFO", "P1.1", f"  Chunk {chunk_index + 1}/{len(chunks)}: nhận {response_chars} chars", job_state.job_id)
                     return result
@@ -341,7 +341,7 @@ class App(ctk.CTk):
         extracted_report = self._read_json(Path(output_dir) / "parsed" / "extracted-report.json")
         logger.log("INFO", job_state.current_step_id, "▶ Bắt đầu lập kế hoạch screens từ extracted report", job_state.job_id)
         self._simulate_step_progress(0.5)
-        screen_plan = self._llm_chat(P1_1B_SCREEN_PLANNING, {"report_month": job_state.report_month, "extracted_report": extracted_report}, "P1.1b", logger, job_state.job_id)
+        screen_plan = self._llm_chat(P1_1B_SCREEN_PLANNING, {"report_month": job_state.report_month, "extracted_report": extracted_report}, "P1.1b", logger, job_state.job_id, max_tokens=3000)
         screens = screen_plan.get("screens", [])
         if not isinstance(screens, list) or len(screens) < 2:
             return StepResult(success=False, error_code="SCREEN_PLAN_INVALID", error_message="P1.1b output phải có screens list với intro/closing")
@@ -374,7 +374,7 @@ class App(ctk.CTk):
                     "screen_plan": screen_plan,
                     "workflow_template_md": template_content,
                 }
-                return self._llm_chat(P1_2_WORKFLOW_COMPOSITION, input_payload, "P1.2", logger, job_state.job_id)
+                return self._llm_chat(P1_2_WORKFLOW_COMPOSITION, input_payload, "P1.2", logger, job_state.job_id, max_tokens=4000)
 
             workflow_parts = processor.process_chunks(
                 workflow_chunks,
@@ -790,9 +790,9 @@ class App(ctk.CTk):
                 merged["scenes"].append(scene)
         return merged
 
-    def _llm_chat(self, system_prompt: str, input_payload: dict[str, Any], step_id: str, logger: EventLogger, job_id: str) -> dict[str, Any]:
+    def _llm_chat(self, system_prompt: str, input_payload: dict[str, Any], step_id: str, logger: EventLogger, job_id: str, max_tokens: int = 4000) -> dict[str, Any]:
         try:
-            result = self._llm_client().chat_with_retry_parse(system_prompt, json.dumps(input_payload, ensure_ascii=False))
+            result = self._llm_client().chat_with_retry_parse(system_prompt, json.dumps(input_payload, ensure_ascii=False), max_tokens=max_tokens)
             if not isinstance(result, dict):
                 raise ValueError("LLM output phải là JSON object")
             return result

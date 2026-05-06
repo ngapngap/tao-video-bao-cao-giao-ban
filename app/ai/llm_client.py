@@ -126,7 +126,7 @@ class LLMClient:
 
         raise ValueError(f"Cannot extract JSON from LLM response. First 500 chars: {stripped_content[:500]}")
 
-    def chat(self, system_prompt: str, user_content: str, temperature: float = 0.1) -> dict[str, Any]:
+    def chat(self, system_prompt: str, user_content: str, temperature: float = 0.1, max_tokens: int = 4000) -> dict[str, Any]:
         """Gọi LLM, trả về parsed JSON response."""
         start_time = time.time()
         headers = {
@@ -145,6 +145,7 @@ class LLMClient:
             ],
             "temperature": temperature,
             "stream": False,
+            "max_tokens": max_tokens,
         }
         if self._supports_json_mode:
             payload["response_format"] = {"type": "json_object"}
@@ -185,19 +186,16 @@ class LLMClient:
             }
             raise ValueError(f"LLM response parse failed: {error_detail}") from exc
 
-    def chat_with_retry_parse(self, system_prompt: str, user_content: str, max_parse_retries: int = 2, temperature: float = 0.1) -> dict[str, Any]:
+    def chat_with_retry_parse(self, system_prompt: str, user_content: str, max_parse_retries: int = 2, temperature: float = 0.1, max_tokens: int = 4000) -> dict[str, Any]:
         """Gọi LLM và retry khi response không parse được thành JSON."""
         retry_prompt = system_prompt
         for attempt in range(max_parse_retries + 1):
             try:
-                return self.chat(retry_prompt, user_content, temperature=temperature)
+                return self.chat(retry_prompt, user_content, temperature=temperature, max_tokens=max_tokens)
             except ValueError:
                 if attempt >= max_parse_retries:
                     raise
-                retry_prompt = (
-                    retry_prompt
-                    + "\n\nCRITICAL: Your previous response was not valid JSON. You MUST respond with ONLY a valid JSON object. No text before or after."
-                )
+                retry_prompt = retry_prompt + "\n\nCRITICAL: Respond with ONLY valid JSON."
         raise RuntimeError("Unreachable LLM parse retry state")
 
     def fetch_models(self) -> list[str]:
