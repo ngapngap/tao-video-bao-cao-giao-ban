@@ -145,6 +145,17 @@ class LLMClient:
                 )
         raise RuntimeError("Unreachable LLM parse retry state")
 
+    def fetch_models(self) -> list[str]:
+        """Gọi GET {base_url}/models để lấy danh sách model IDs."""
+        models_url = self.url.replace("/chat/completions", "/models")
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(models_url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            models = data.get("data", [])
+            return sorted([m.get("id", "") for m in models if m.get("id")])
+
     def test_connection(self) -> tuple[bool, str]:
         """Test kết nối, trả (ok, message)."""
         try:

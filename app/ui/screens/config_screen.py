@@ -28,6 +28,13 @@ class ConfigScreen(ctk.CTkFrame):
         self.model_key_visible = False
         self.tts_key_visible = False
         self.credential_store = CredentialStore()
+        self.model_dropdown_placeholder = "Nhập URL và API Key trước"
+        self.model_loading_text = "Đang tải..."
+        self.model_no_results_text = "Không tìm thấy model"
+        self.model_error_text = "Lỗi: nhập thủ công"
+        self.model_fetch_in_progress = False
+        self._last_fetch_url = ""
+        self._last_fetch_key = ""
         self.grid_columnconfigure(0, weight=7, uniform="config_columns")
         self.grid_columnconfigure(1, weight=3, uniform="config_columns")
         self.grid_rowconfigure(0, weight=1)
@@ -56,8 +63,8 @@ class ConfigScreen(ctk.CTkFrame):
     def _build_llm_card(self) -> None:
         self._build_card_heading(self.llm_card, "Mô hình LLM", row=0)
         self.url_model_entry, self.url_model_error = self._build_entry_field(self.llm_card, row=1, label="URL model", placeholder="https://api.openai.com/v1")
-        self.default_model_entry, self.default_model_error = self._build_entry_field(self.llm_card, row=2, label="Model mặc định", placeholder="gpt-4-turbo")
-        self.apikey_model_entry, self.apikey_model_error = self._build_key_field(self.llm_card, row=3, label="API key model", toggle_command=self.toggle_model_key)
+        self.apikey_model_entry, self.apikey_model_error = self._build_key_field(self.llm_card, row=2, label="API key model", toggle_command=self.toggle_model_key)
+        self.default_model_combo, self.default_model_entry, self.default_model_error = self._build_model_selector(self.llm_card, row=3, label="Model mặc định")
         self.credential_id_model_entry, _ = self._build_entry_field(self.llm_card, row=4, label="Credential ID model", placeholder="Chưa lưu", readonly=True)
         self.test_llm_button = self._build_secondary_button(self.llm_card, text="Kiểm tra LLM", command=self.test_llm)
         self.test_llm_button.grid(row=5, column=0, sticky="w", padx=tokens.SPACING_XL, pady=(0, tokens.SPACING_XL))
@@ -147,6 +154,24 @@ class ConfigScreen(ctk.CTkFrame):
         error_label.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(tokens.SPACING_XS, 0))
         return entry, error_label
 
+    def _build_model_selector(self, master: ctk.CTkFrame, row: int, label: str) -> tuple[ctk.CTkComboBox, ctk.CTkEntry, ctk.CTkLabel]:
+        frame = ctk.CTkFrame(master, fg_color="transparent")
+        frame.grid(row=row, column=0, sticky="ew", padx=tokens.SPACING_XL, pady=(0, tokens.SPACING_MD))
+        frame.grid_columnconfigure(0, weight=1)
+        field_label = ctk.CTkLabel(frame, text=label, font=tokens.FONT_BODY_BOLD, text_color=tokens.COLOR_TEXT, anchor="w")
+        field_label.grid(row=0, column=0, sticky="ew", pady=(0, tokens.SPACING_XS))
+        combo = ctk.CTkComboBox(frame, height=36, corner_radius=tokens.RADIUS_MD, border_width=tokens.BORDER_WIDTH, border_color=tokens.COLOR_BORDER, fg_color=tokens.COLOR_SURFACE, button_color=tokens.COLOR_SURFACE, button_hover_color=tokens.COLOR_BACKGROUND, dropdown_fg_color=tokens.COLOR_SURFACE, dropdown_hover_color=tokens.COLOR_BACKGROUND, text_color=tokens.COLOR_TEXT, dropdown_text_color=tokens.COLOR_TEXT, font=tokens.FONT_BODY, values=[self.model_dropdown_placeholder], state="normal")
+        combo.grid(row=1, column=0, sticky="ew")
+        combo.set(self.model_dropdown_placeholder)
+        combo.bind("<FocusIn>", self._on_model_dropdown_focus)
+        combo.bind("<Button-1>", self._on_model_dropdown_focus)
+        entry = ctk.CTkEntry(frame, height=36, corner_radius=tokens.RADIUS_MD, border_width=tokens.BORDER_WIDTH, border_color=tokens.COLOR_BORDER, fg_color=tokens.COLOR_SURFACE, text_color=tokens.COLOR_TEXT, placeholder_text="Nhập model name thủ công", font=tokens.FONT_BODY)
+        entry.grid(row=1, column=0, sticky="ew")
+        entry.grid_remove()
+        error_label = ctk.CTkLabel(frame, text="", font=tokens.FONT_SMALL, text_color=tokens.COLOR_ERROR, anchor="w")
+        error_label.grid(row=2, column=0, sticky="ew", pady=(tokens.SPACING_XS, 0))
+        return combo, entry, error_label
+
     def _build_status_row(self, master: ctk.CTkFrame, row: int, label: str, value: str, wraplength: int = 240) -> ctk.CTkLabel:
         frame = ctk.CTkFrame(master, fg_color="transparent")
         frame.grid(row=row, column=0, sticky="ew", padx=tokens.SPACING_XL, pady=(0, tokens.SPACING_MD))
@@ -177,7 +202,7 @@ class ConfigScreen(ctk.CTkFrame):
         valid = True
         valid &= self._validate_url(self.url_model_entry, self.url_model_error)
         valid &= self._validate_url(self.url_tts_entry, self.url_tts_error)
-        valid &= self._validate_required(self.default_model_entry, self.default_model_error, "Model mặc định không được rỗng.")
+        valid &= self._validate_required_model()
         valid &= self._validate_required(self.model_tts_entry, self.model_tts_error, "Model TTS không được rỗng.")
         return bool(valid)
 
@@ -189,6 +214,17 @@ class ConfigScreen(ctk.CTkFrame):
             return True
         entry.configure(border_color=tokens.COLOR_ERROR)
         error_label.configure(text="URL phải bắt đầu bằng http:// hoặc https://.")
+        return False
+
+    def _validate_required_model(self) -> bool:
+        model = self._current_default_model()
+        target = self.default_model_entry if self.default_model_entry.winfo_ismapped() else self.default_model_combo
+        if model:
+            target.configure(border_color=tokens.COLOR_SUCCESS)
+            self.default_model_error.configure(text="")
+            return True
+        target.configure(border_color=tokens.COLOR_ERROR)
+        self.default_model_error.configure(text="Model mặc định không được rỗng.")
         return False
 
     def _validate_required(self, entry: ctk.CTkEntry, error_label: ctk.CTkLabel, message: str) -> bool:
@@ -239,7 +275,7 @@ class ConfigScreen(ctk.CTkFrame):
 
     def reset_form(self) -> None:
         self._set_entry_value(self.url_model_entry, "")
-        self._set_entry_value(self.default_model_entry, "")
+        self._reset_model_selector()
         self._set_entry_value(self.url_tts_entry, "")
         self._set_entry_value(self.model_tts_entry, "")
         self._set_entry_value(self.voice_entry, "")
@@ -270,6 +306,62 @@ class ConfigScreen(ctk.CTkFrame):
     def test_llm(self) -> None:
         self._start_connection_test("llm", self.llm_result_value, self.test_llm_button)
 
+    def _on_model_dropdown_focus(self, event: object | None = None) -> None:
+        """Tự động tải danh sách model khi user click/focus vào dropdown."""
+        del event
+        url = self.url_model_entry.get().strip()
+        api_key = self._current_secret(self.apikey_model_entry, MODEL_CREDENTIAL_ID)
+        if not url or not api_key or self.model_fetch_in_progress:
+            return
+        if self._last_fetch_url == url and self._last_fetch_key == api_key:
+            return
+        self._fetch_and_populate_models(url, api_key)
+
+    def _fetch_and_populate_models(self, url: str, api_key: str) -> None:
+        """Fetch models trong background thread và cập nhật dropdown khi xong."""
+        self.model_fetch_in_progress = True
+        self.default_model_entry.grid_remove()
+        self.default_model_combo.grid()
+        self.default_model_combo.configure(values=[self.model_loading_text], state="normal", border_color=tokens.COLOR_BORDER)
+        self.default_model_combo.set(self.model_loading_text)
+        self.default_model_error.configure(text="")
+        threading.Thread(target=self._run_fetch_models, args=(url, api_key), daemon=True).start()
+
+    def _run_fetch_models(self, url: str, api_key: str) -> None:
+        try:
+            models = LLMClient(url, api_key, "").fetch_models()
+            self.after(0, lambda: self._populate_models(models, url, api_key))
+        except Exception as exc:  # noqa: BLE001 - hiển thị lỗi API để user nhập fallback
+            error = str(exc)
+            self.after(0, lambda: self._handle_fetch_error(error))
+
+    def _populate_models(self, models: list[str], url: str, api_key: str) -> None:
+        """Populate dropdown với danh sách models hoặc bật fallback nhập thủ công."""
+        self.model_fetch_in_progress = False
+        if models:
+            self.default_model_entry.grid_remove()
+            self.default_model_combo.grid()
+            self.default_model_combo.configure(values=models, state="normal", border_color=tokens.COLOR_SUCCESS)
+            self.default_model_combo.set(models[0])
+            self.default_model_error.configure(text="")
+            self._last_fetch_url = url
+            self._last_fetch_key = api_key
+        else:
+            self.default_model_combo.configure(values=[self.model_no_results_text], state="normal", border_color=tokens.COLOR_ERROR)
+            self.default_model_combo.set("")
+            self.default_model_entry.grid()
+            self.default_model_entry.configure(border_color=tokens.COLOR_ERROR)
+            self.default_model_error.configure(text="Không tìm thấy model. Có thể nhập thủ công.")
+
+    def _handle_fetch_error(self, error_msg: str) -> None:
+        """Handle lỗi fetch models và bật fallback nhập thủ công."""
+        self.model_fetch_in_progress = False
+        self.default_model_combo.configure(values=[self.model_error_text], state="normal", border_color=tokens.COLOR_ERROR)
+        self.default_model_combo.set("")
+        self.default_model_entry.grid()
+        self.default_model_entry.configure(border_color=tokens.COLOR_ERROR)
+        self.default_model_error.configure(text=f"Không tải được danh sách model: {error_msg}. Có thể nhập thủ công.")
+
     def test_tts(self) -> None:
         self._start_connection_test("tts", self.tts_result_value, self.test_tts_button)
 
@@ -292,7 +384,7 @@ class ConfigScreen(ctk.CTkFrame):
             ok, message = LLMClient(
                 self.url_model_entry.get().strip(),
                 self._current_secret(self.apikey_model_entry, MODEL_CREDENTIAL_ID),
-                self.default_model_entry.get().strip(),
+                self._current_default_model(),
             ).test_connection()
         else:
             ok, message = TTSGenerator(
@@ -334,7 +426,7 @@ class ConfigScreen(ctk.CTkFrame):
         return {
             "llm": {
                 "url_model": self.url_model_entry.get().strip(),
-                "default_model": self.default_model_entry.get().strip(),
+                "default_model": self._current_default_model(),
                 "api_key": self._current_secret(self.apikey_model_entry, MODEL_CREDENTIAL_ID),
                 "credential_id_model": MODEL_CREDENTIAL_ID if self.has_saved_keys else "",
             },
@@ -366,7 +458,7 @@ class ConfigScreen(ctk.CTkFrame):
     def _validate_connection_fields(self, kind: str) -> str:
         if kind == "llm":
             url = self.url_model_entry.get().strip()
-            model = self.default_model_entry.get().strip()
+            model = self._current_default_model()
             secret = self._current_secret(self.apikey_model_entry, MODEL_CREDENTIAL_ID)
             label = "LLM"
         else:
@@ -387,12 +479,36 @@ class ConfigScreen(ctk.CTkFrame):
     def _current_secret(self, entry: ctk.CTkEntry, credential_id: str) -> str:
         return entry.get().strip() or self.credential_store.retrieve(credential_id) or ""
 
+    def _current_default_model(self) -> str:
+        if self.default_model_entry.winfo_ismapped():
+            return self.default_model_entry.get().strip()
+        value = self.default_model_combo.get().strip()
+        placeholder_values = {
+            self.model_dropdown_placeholder,
+            self.model_loading_text,
+            self.model_no_results_text,
+            self.model_error_text,
+        }
+        return "" if value in placeholder_values else value
+
     def _int_or_default(self, value: str, default: int) -> int:
         try:
             parsed = int(value)
             return parsed if parsed > 0 else default
         except ValueError:
             return default
+
+    def _reset_model_selector(self) -> None:
+        self.default_model_entry.grid_remove()
+        self._clear_entry(self.default_model_entry)
+        self.default_model_entry.configure(border_color=tokens.COLOR_BORDER)
+        self.default_model_combo.grid()
+        self.default_model_combo.configure(values=[self.model_dropdown_placeholder], state="normal", border_color=tokens.COLOR_BORDER)
+        self.default_model_combo.set(self.model_dropdown_placeholder)
+        self.default_model_error.configure(text="")
+        self.model_fetch_in_progress = False
+        self._last_fetch_url = ""
+        self._last_fetch_key = ""
 
     def _sync_key_buttons(self) -> None:
         if hasattr(self, "change_key_button"):
@@ -403,6 +519,7 @@ class ConfigScreen(ctk.CTkFrame):
     def _clear_validation_state(self) -> None:
         for entry in (self.url_model_entry, self.default_model_entry, self.url_tts_entry, self.model_tts_entry, self.step_timeout_seconds_entry, self.max_retry_entry, self.retry_backoff_seconds_entry):
             entry.configure(border_color=tokens.COLOR_BORDER)
+        self.default_model_combo.configure(border_color=tokens.COLOR_BORDER)
         for error_label in (self.url_model_error, self.default_model_error, self.apikey_model_error, self.url_tts_error, self.model_tts_error, self.apikey_tts_error, self.step_timeout_seconds_error, self.max_retry_error, self.retry_backoff_seconds_error):
             error_label.configure(text="")
 
