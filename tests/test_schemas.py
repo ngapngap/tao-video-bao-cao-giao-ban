@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from app.ai import ExtractedReport, WorkflowOutput
+from app.ai.schemas import RawLLMExtractedReport
+from app.main import App
 
 
 def test_extracted_report_parses_from_dict():
@@ -40,6 +42,22 @@ def test_extracted_report_parses_from_dict():
     assert report.metrics[0].citations[0].page_no == 1
     assert report.sections[0].section_key == "danh_gia_chung"
     assert report.warnings == ["Thiếu số liệu chi tiết nhóm A"]
+
+
+def test_raw_llm_extracted_report_accepts_dict_warnings_and_app_normalizes_them():
+    raw = RawLLMExtractedReport.model_validate(
+        {
+            "warnings": [
+                {"warning_type": "LOW_CONFIDENCE", "severity": "WARN", "message": "Thiếu nguồn trích dẫn"},
+                "Cảnh báo dạng chuỗi",
+            ]
+        }
+    )
+    app = App.__new__(App)
+
+    normalized = app._normalize_warnings(raw.warnings)
+
+    assert normalized == ["[WARN] Thiếu nguồn trích dẫn", "Cảnh báo dạng chuỗi"]
 
 
 def test_workflow_output_parses_from_dict():

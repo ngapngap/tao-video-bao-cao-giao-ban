@@ -13,7 +13,7 @@ import customtkinter as ctk
 
 from app.core.models import JobState, JobStatus, StepStatus
 from app.ui import tokens
-from app.workflow.validator import WorkflowValidator
+from app.workflow import WorkflowComposer, WorkflowValidator
 
 if not hasattr(ctk, "filedialog"):
     ctk.filedialog = filedialog
@@ -240,13 +240,18 @@ class CreateVideoScreen(ctk.CTkFrame):
         """Cập nhật readiness checklist từ trạng thái form hiện tại."""
         self.readiness_state["pdf_valid"] = self.selected_pdf_path is not None
         self.readiness_state["month_valid"] = self.validate_month(self.month_entry.get())
-        self.readiness_state["template_valid"] = self._check_template_valid()[0]
+        template_valid, template_message = self._check_template_valid()
+        self.readiness_state["template_valid"] = template_valid
         self.readiness_state["output_writable"] = self._is_output_writable()
         for key, state in self.readiness_state.items():
             indicator, label = self.readiness_widgets[key]
             icon, color, text_color = self._readiness_style(state)
             indicator.configure(text=icon, fg_color=color)
-            label.configure(text_color=text_color)
+            if key == "template_valid" and state is True and template_message.startswith("Cảnh báo"):
+                indicator.configure(text="!", fg_color=tokens.COLOR_WARNING)
+                label.configure(text=f"Mẫu workflow hợp lệ - {template_message}", text_color=tokens.COLOR_WARNING)
+            else:
+                label.configure(text_color=text_color)
         self.check_start_enabled()
 
     def set_config_ready(self, llm_ready: bool, tts_ready: bool) -> None:
@@ -325,13 +330,13 @@ class CreateVideoScreen(ctk.CTkFrame):
 
     def _check_template_valid(self) -> tuple[bool, str]:
         """Kiểm tra workflow template hợp lệ về cấu trúc, không validate placeholder values."""
-        template_path = self.template_var.get() or "workflow.md"
-        if not os.path.exists(template_path):
-            return False, "File workflow.md không tồn tại"
+        composer = WorkflowComposer(self.template_var.get() or "workflow.md")
+        template_path = composer._find_template_path()
+        if not template_path:
+            return True, "Cảnh báo: Template workflow không tìm thấy, sẽ dùng template mặc định"
 
         try:
-            with open(template_path, "r", encoding="utf-8") as file:
-                content = file.read()
+            content = Path(template_path).read_text(encoding="utf-8")
 
             if len(content) < 100:
                 return False, "File workflow.md quá ngắn"

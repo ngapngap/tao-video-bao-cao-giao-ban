@@ -76,6 +76,14 @@ def _codes(result) -> list[str]:
     return [error["code"] for error in result.errors]
 
 
+def test_workflow_composer_can_load_default_template_when_workflow_md_missing(monkeypatch):
+    composer = WorkflowComposer("missing-workflow-template.md")
+    monkeypatch.setattr(composer, "_find_template_path", lambda: "")
+
+    assert "Workflow mặc định" in composer.load_template()
+    assert "vi-VN-NamMinhNeural" in composer.load_template()
+
+
 def test_compose_from_extracted_report_creates_intro_content_and_closing():
     workflow = WorkflowComposer().compose_from_extracted_report(_sample_extracted_report(), "2026-05", "job-001")
 

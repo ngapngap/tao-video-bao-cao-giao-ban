@@ -6,3 +6,4 @@ httpx>=0.25.0
 keyring>=24.0.0
 pywin32>=306
 PyInstaller>=6.0.0
+edge-tts>=6.1.0

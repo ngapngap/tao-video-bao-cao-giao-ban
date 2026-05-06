@@ -46,7 +46,7 @@ class RawLLMExtractedReport(BaseModel):
     report_type: str = ""
     metrics: dict[str, Any] | list[Any] = Field(default_factory=dict)
     sections: list[Any] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
+    warnings: list[str | dict[str, Any]] = Field(default_factory=list)
     issues: dict[str, Any] = Field(default_factory=dict)
     priorities_next_month: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)

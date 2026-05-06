@@ -367,7 +367,10 @@ class App(ctk.CTk):
             logger.log("INFO", "P1.2", "▶ Bắt đầu sinh workflow từ screen plan", job_state.job_id)
             logger.log("INFO", job_state.current_step_id, f"  Input artifacts: {screen_plan_path}, {extracted_report_path}", job_state.job_id)
             self._simulate_step_progress(0.5)
-            template_content = Path(template_path).read_text(encoding="utf-8")
+            composer = WorkflowComposer(template_path)
+            template_content = composer.load_template()
+            if not composer._find_template_path():
+                logger.log("WARN", "P1.2", "  Template workflow không tìm thấy, dùng template mặc định", job_state.job_id)
 
             try:
                 workflow_chunks = self._chunk_workflow_sections(extracted_report, screen_plan)
@@ -402,7 +405,7 @@ class App(ctk.CTk):
                 logger.log("INFO", "P1.2", "  Fallback workflow từ screen-plan", job_state.job_id)
                 ai_workflow = self._build_workflow_from_screen_plan(screen_plan, extracted_report, job_state)
 
-            workflow = WorkflowComposer(template_path).compose_from_ai_output(ai_workflow, job_state.report_month, job_state.job_id)
+            workflow = composer.compose_from_ai_output(ai_workflow, job_state.report_month, job_state.job_id)
             workflow = WorkflowOutput.model_validate(workflow).model_dump(mode="json")
             validation = WorkflowValidator().validate(workflow, extracted_report)
             if not validation.passed:
@@ -655,11 +658,30 @@ class App(ctk.CTk):
             },
             "metrics": [],
             "sections": self._extract_sections(raw_data),
-            "warnings": raw_data.get("warnings", []),
+            "warnings": self._normalize_warnings(raw_data.get("warnings", [])),
         }
 
         self._flatten_dict_to_metrics(raw_data, normalized["metrics"], "")
         normalized["metrics"] = self._dedupe_metrics(normalized["metrics"])
+        return normalized
+
+    def _normalize_warnings(self, warnings: Any) -> list[str]:
+        """Chuyển warnings từ dict/list hỗn hợp sang list string."""
+        if warnings is None:
+            return []
+        if not isinstance(warnings, list):
+            warnings = [warnings]
+
+        normalized: list[str] = []
+        for warning in warnings:
+            if isinstance(warning, str):
+                normalized.append(warning)
+            elif isinstance(warning, dict):
+                msg = warning.get("message") or warning.get("warning_type") or str(warning)
+                severity = warning.get("severity", "")
+                normalized.append(f"[{severity}] {msg}" if severity else str(msg))
+            else:
+                normalized.append(str(warning))
         return normalized
 
     def _flatten_dict_to_metrics(self, data: dict[str, Any], metrics: list[dict[str, Any]], prefix: str) -> None:
