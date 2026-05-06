@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any
 
 import httpx
@@ -15,12 +16,27 @@ logger = logging.getLogger(__name__)
 class LLMClient:
     """Client gọi OpenAI-compatible API."""
 
-    def __init__(self, url: str, api_key: str, model: str, timeout: float = 180.0, supports_json_mode: bool = False):
+    def __init__(
+        self,
+        url: str,
+        api_key: str,
+        model: str,
+        timeout: float | httpx.Timeout = 180.0,
+        supports_json_mode: bool = False,
+    ):
         base_url = url.rstrip("/")
         self.url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
         self.api_key = api_key
         self.model = model
-        self.timeout = timeout
+        if isinstance(timeout, (int, float)):
+            self.timeout = httpx.Timeout(
+                connect=30.0,
+                read=max(float(timeout), 300.0),
+                write=30.0,
+                pool=10.0,
+            )
+        else:
+            self.timeout = timeout
         self._supports_json_mode = supports_json_mode
 
     def _parse_sse_response(self, response_text: str) -> str:
@@ -112,6 +128,7 @@ class LLMClient:
 
     def chat(self, system_prompt: str, user_content: str, temperature: float = 0.1) -> dict[str, Any]:
         """Gọi LLM, trả về parsed JSON response."""
+        start_time = time.time()
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -146,6 +163,14 @@ class LLMClient:
                 else:
                     data = response.json()
                     raw_content = data["choices"][0]["message"]["content"]
+                elapsed = time.time() - start_time
+                logger.info(
+                    "LLM response received: status=%s, elapsed=%.2fs, response_length=%s, content_type=%s",
+                    response.status_code,
+                    elapsed,
+                    len(response_text),
+                    content_type or "N/A",
+                )
                 logger.debug("Raw LLM response content preview: %s", str(raw_content)[:500])
                 return self._extract_json_from_content(raw_content)
         except (json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
