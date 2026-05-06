@@ -7,6 +7,7 @@ Không bịa số. Chỉ JSON."""
 
 P1_1_CHUNK_EXTRACTION = """Phân tích MỘT PHẦN báo cáo BHXH (chunk {chunk_index}/{total_chunks}). Trích xuất tất cả số liệu có cấu trúc.
 Trả JSON object. Mỗi metric có: metric_key, metric_name, value, unit, page_no.
+Trả TỐI ĐA 15 metrics. Nếu nhiều hơn, chỉ lấy metrics quan trọng nhất.
 Không bịa số liệu. Không giải thích. Chỉ JSON."""
 
 P1_1B_SCREEN_PLANNING = """Đề xuất screens cho video báo cáo.

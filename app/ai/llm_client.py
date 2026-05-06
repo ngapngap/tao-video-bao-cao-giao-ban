@@ -62,6 +62,42 @@ class LLMClient:
         """Remove ...</think> tags from response."""
         return re.sub(r".*?</think>", "", content, flags=re.DOTALL).strip()
 
+    def _try_fix_truncated_json(self, content: str) -> str | None:
+        """Cố gắng sửa JSON bị cắt giữa chừng."""
+        stripped = content.strip()
+
+        # Array bị cắt: thêm ]
+        if stripped.startswith("["):
+            # Tìm object cuối cùng hoàn chỉnh
+            last_complete = stripped.rfind("}")
+            if last_complete > 0:
+                fixed = stripped[: last_complete + 1] + "]"
+                try:
+                    json.loads(fixed)
+                    return fixed
+                except json.JSONDecodeError:
+                    pass
+            # Thử thêm ] vào cuối
+            fixed = stripped + "]"
+            try:
+                json.loads(fixed)
+                return fixed
+            except json.JSONDecodeError:
+                pass
+
+        # Object bị cắt: thêm }
+        if stripped.startswith("{"):
+            last_complete = stripped.rfind("}")
+            if last_complete > 0:
+                fixed = stripped[: last_complete + 1]
+                try:
+                    json.loads(fixed)
+                    return fixed
+                except json.JSONDecodeError:
+                    pass
+
+        return None
+
     def _extract_json_from_content(self, content: str | dict[str, Any] | list[Any]) -> dict[str, Any]:
         """Extract JSON từ response content, handle nhiều format."""
         if isinstance(content, dict):
@@ -121,6 +157,17 @@ class LLMClient:
                 if isinstance(parsed, list):
                     return {"items": parsed}
                 raise ValueError(f"LLM embedded JSON array is not object/list: {type(parsed).__name__}")
+            except json.JSONDecodeError:
+                pass
+
+        fixed = self._try_fix_truncated_json(stripped_content)
+        if fixed:
+            try:
+                parsed = json.loads(fixed)
+                if isinstance(parsed, dict):
+                    return parsed
+                if isinstance(parsed, list):
+                    return {"items": parsed}
             except json.JSONDecodeError:
                 pass
 

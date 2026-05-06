@@ -301,7 +301,7 @@ class App(ctk.CTk):
                         "total_chunks": len(chunks),
                         "chunk_text": chunk_text,
                     }
-                    result = self._llm_chat(P1_1_CHUNK_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id, max_tokens=2000)
+                    result = self._llm_chat(P1_1_CHUNK_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id, max_tokens=8000)
                     response_chars = len(json.dumps(result, ensure_ascii=False))
                     logger.log("INFO", "P1.1", f"  Chunk {chunk_index + 1}/{len(chunks)}: nhận {response_chars} chars", job_state.job_id)
                     return result
