@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class LLMClient:
     """Client gọi OpenAI-compatible API."""
 
-    def __init__(self, url: str, api_key: str, model: str, timeout: float = 120.0, supports_json_mode: bool = False):
+    def __init__(self, url: str, api_key: str, model: str, timeout: float = 600.0, supports_json_mode: bool = False):
         base_url = url.rstrip("/")
         self.url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
         self.api_key = api_key
@@ -139,8 +139,9 @@ class LLMClient:
                 response = client.post(self.url, headers=headers, json=payload)
                 response.raise_for_status()
                 content_type = response.headers.get("content-type", "")
-                if "text/event-stream" in content_type:
-                    raw_content = self._parse_sse_response(response.text)
+                response_text = response.text
+                if "text/event-stream" in content_type or response_text.lstrip().startswith("data:"):
+                    raw_content = self._parse_sse_response(response_text)
                 else:
                     data = response.json()
                     raw_content = data["choices"][0]["message"]["content"]

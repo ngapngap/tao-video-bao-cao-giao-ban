@@ -20,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import customtkinter as ctk
 
 from app.ai import ExtractedReport, LLMClient, P1_1_PDF_EXTRACTION, P1_2_WORKFLOW_COMPOSITION, WorkflowOutput
+from app.ai.schemas import RawLLMExtractedReport
 from app.core import EventLogger, JobRunner, JobState, JobStatus, RetryPolicy, StepRecord, StepResult
 from app.core.event_logger import mask_sensitive_text
 from app.pdf.normalizer import DataNormalizer
@@ -271,7 +272,9 @@ class App(ctk.CTk):
                 "owner_org": payload.get("owner_org") or "Chưa nhập đơn vị",
                 "pdf_parse_result": {**parse_data, "raw_text": raw_text},
             }
-            extracted_report = self._llm_chat(P1_1_PDF_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id)
+            raw_report = self._llm_chat(P1_1_PDF_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id)
+            RawLLMExtractedReport.model_validate(raw_report)
+            extracted_report = self._normalize_llm_extract(raw_report)
             extracted_report = ExtractedReport.model_validate(extracted_report).model_dump(mode="json")
             logger.log("INFO", job_state.current_step_id, f"Đã gọi LLM extract, nhận {len(extracted_report.get('metrics', []))} metrics", job_state.job_id)
             artifact = Path(output_dir) / "parsed" / "extracted-report.json"
@@ -514,6 +517,42 @@ class App(ctk.CTk):
             ],
             "warnings": ["basic_extraction_from_pdf_parse_result"],
         }
+
+    def _normalize_llm_extract(self, raw_data: dict[str, Any]) -> dict[str, Any]:
+        """Chuyển output LLM tự do sang format ExtractedReport chuẩn."""
+        if "report_metadata" in raw_data:
+            return raw_data
+
+        normalized: dict[str, Any] = {
+            "report_metadata": {
+                "title": raw_data.get("report_title", ""),
+                "period": raw_data.get("report_month", ""),
+                "organization": raw_data.get("owner_org", raw_data.get("issuing_org", "")),
+            },
+            "metrics": [],
+            "sections": raw_data.get("sections", []),
+            "warnings": raw_data.get("warnings", []),
+        }
+
+        raw_metrics = raw_data.get("metrics", {})
+        if isinstance(raw_metrics, dict):
+            for category, items in raw_metrics.items():
+                if isinstance(items, dict):
+                    for key, value in items.items():
+                        if isinstance(value, dict) and "value" in value:
+                            normalized["metrics"].append(
+                                {
+                                    "metric_key": f"{category}.{key}",
+                                    "metric_name": key.replace("_", " ").title(),
+                                    "value": str(value.get("value", "")),
+                                    "unit": value.get("unit", ""),
+                                    "citations": value.get("citations", []),
+                                }
+                            )
+        elif isinstance(raw_metrics, list):
+            normalized["metrics"] = raw_metrics
+
+        return normalized
 
     def _llm_chat(self, system_prompt: str, input_payload: dict[str, Any], step_id: str, logger: EventLogger, job_id: str) -> dict[str, Any]:
         try:

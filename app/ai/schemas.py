@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Citation(BaseModel):
@@ -35,11 +35,34 @@ class ReportMetadata(BaseModel):
     organization: str
 
 
+class RawLLMExtractedReport(BaseModel):
+    """Schema linh hoạt để parse output LLM, chấp nhận nhiều format."""
+
+    report_month: str = ""
+    report_title: str = ""
+    report_date: str = ""
+    owner_org: str = ""
+    issuing_org: str = ""
+    report_type: str = ""
+    metrics: dict[str, Any] | list[Any] = Field(default_factory=dict)
+    sections: list[Any] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    issues: dict[str, Any] = Field(default_factory=dict)
+    priorities_next_month: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    class Config:
+        extra = "allow"
+
+
 class ExtractedReport(BaseModel):
-    report_metadata: ReportMetadata
-    metrics: list[Metric] = []
-    sections: list[Section] = []
-    warnings: list[str] = []
+    report_metadata: ReportMetadata = ReportMetadata(title="", period="", organization="")
+    metrics: list[Metric] = Field(default_factory=list)
+    sections: list[Section] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+    class Config:
+        extra = "allow"
 
 
 class TTSSettings(BaseModel):
