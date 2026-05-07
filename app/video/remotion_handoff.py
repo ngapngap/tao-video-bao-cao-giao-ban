@@ -8,6 +8,7 @@ import hashlib
 import importlib
 import json
 import os
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -361,14 +362,114 @@ class FinalPackager:
 
         return publish
 
+    def package(self, render_plan: dict | None = None, output_path: str | None = None) -> str:
+        """Tạo final/video.mp4 hợp lệ tối thiểu bằng ffmpeg.
+
+        Không ghi placeholder bytes rỗng/zero. Nếu runtime không có ffmpeg thì
+        fail rõ ràng để pipeline không publish artifact MP4 không hợp lệ.
+        """
+        final_dir = Path(self.output_dir) / "final"
+        final_dir.mkdir(parents=True, exist_ok=True)
+        if output_path is None:
+            target = final_dir / "video.mp4"
+        else:
+            target = Path(output_path)
+            if not target.is_absolute():
+                target = Path(self.output_dir) / target
+        target_path = str(target)
+
+        if not self._ffmpeg_available():
+            raise RuntimeError("ffmpeg not found, cannot create valid MP4")
+
+        self._create_placeholder_mp4_with_ffmpeg(target_path, render_plan or {})
+        self._assert_valid_mp4(target_path)
+        return os.path.relpath(target_path, self.output_dir).replace(os.sep, "/")
+
     def create_mock_video(self) -> str:
-        """Tạo file video MP4 mock placeholder cho mock/dev mode."""
-        final_dir = os.path.join(self.output_dir, "final")
-        os.makedirs(final_dir, exist_ok=True)
-        video_path = os.path.join(final_dir, "video.mp4")
-        with open(video_path, "wb") as file:
-            file.write(b"\x00" * 1024)
-        return "final/video.mp4"
+        """Backward-compatible alias: tạo MP4 hợp lệ tối thiểu, không tạo placeholder invalid."""
+        return self.package()
+
+    def _ffmpeg_available(self) -> bool:
+        return shutil.which("ffmpeg") is not None
+
+    def _ffprobe_available(self) -> bool:
+        return shutil.which("ffprobe") is not None
+
+    def _create_placeholder_mp4_with_ffmpeg(self, output_path: str, render_plan: dict | None = None) -> None:
+        """Tạo MP4 nền đen 3 giây có audio silent bằng ffmpeg."""
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        duration = self._placeholder_duration_seconds(render_plan or {})
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=black:s=1920x1080:d={duration:g}",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=channel_layout=stereo:sample_rate=44100",
+            "-shortest",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            output_path,
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or str(exc)).strip()
+            raise RuntimeError(f"ffmpeg failed to create valid MP4: {detail}") from exc
+
+    def _placeholder_duration_seconds(self, render_plan: dict) -> float:
+        duration = render_plan.get("estimated_duration_seconds")
+        if isinstance(duration, (int, float)) and duration > 0:
+            return max(1.0, min(float(duration), 10.0))
+        timeline = render_plan.get("timeline")
+        if isinstance(timeline, list) and timeline:
+            fps = float(render_plan.get("fps") or render_plan.get("frame_rate") or 30)
+            max_frame = 0.0
+            for item in timeline:
+                if not isinstance(item, dict):
+                    continue
+                start = float(item.get("start_frame") or 0)
+                duration_frames = float(item.get("duration_frames") or 0)
+                max_frame = max(max_frame, start + duration_frames)
+            if max_frame > 0 and fps > 0:
+                return max(1.0, min(max_frame / fps, 10.0))
+        return 3.0
+
+    def _assert_valid_mp4(self, output_path: str) -> None:
+        path = Path(output_path)
+        if not path.exists() or path.stat().st_size <= 0:
+            raise RuntimeError("ffmpeg did not create final/video.mp4")
+        sample = path.read_bytes()[:4096]
+        if sample and all(byte == 0 for byte in sample):
+            raise RuntimeError("created MP4 is invalid: file content is all zero bytes")
+        if self._ffprobe_available():
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    output_path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "ffprobe failed").strip()
+                raise RuntimeError(f"created MP4 failed ffprobe validation: {detail}")
 
     def _compute_checksum(self, relative_path: str) -> str:
         """Compute MD5 checksum của file."""

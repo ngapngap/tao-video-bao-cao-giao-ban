@@ -551,7 +551,7 @@ class App(ctk.CTk):
         remotion_manifest_path = RemotionManifest(output_dir).save_manifest(remotion_manifest)
         packager = FinalPackager(output_dir)
         self._llm_video_step("S2.8", {"remotion_manifest": remotion_manifest, "render_plan": render_plan}, logger, job_state)
-        video_path = packager.create_mock_video()
+        video_path = packager.package(render_plan)
         packager.create_publish_manifest(job_state.job_id, job_state.report_month, video_path, remotion_manifest)
         publish_path = Path(output_dir) / "final" / "publish-manifest.json"
         video_full_path = Path(output_dir) / video_path

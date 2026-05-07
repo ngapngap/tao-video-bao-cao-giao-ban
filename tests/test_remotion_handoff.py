@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 
+import pytest
+
 from app.video import FinalPackager, RemotionManifest, RenderGate, TTSGenerator
 
 
@@ -125,15 +127,22 @@ def test_render_gate_check_final_ready_fails_when_tts_audio_missing(tmp_path):
     assert "Scene scene_content_01 có TTS enabled nhưng không có audio" in errors
 
 
-def test_final_packager_create_mock_video_creates_video_file(tmp_path):
+def test_final_packager_create_mock_video_creates_valid_mp4_or_fails_without_ffmpeg(tmp_path):
     packager = FinalPackager(str(tmp_path))
+
+    if not packager._ffmpeg_available():
+        with pytest.raises(RuntimeError, match="ffmpeg not found, cannot create valid MP4"):
+            packager.create_mock_video()
+        return
 
     video_path = packager.create_mock_video()
 
     assert video_path == "final/video.mp4"
     full_path = tmp_path / "final" / "video.mp4"
     assert full_path.exists()
-    assert full_path.stat().st_size == 1024
+    assert full_path.stat().st_size > 1024
+    sample = full_path.read_bytes()[:4096]
+    assert sample and any(byte != 0 for byte in sample)
 
 
 def test_final_packager_create_publish_manifest_creates_file(tmp_path):
