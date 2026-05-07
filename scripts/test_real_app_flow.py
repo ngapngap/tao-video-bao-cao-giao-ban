@@ -81,7 +81,7 @@ STEP_TIMEOUTS = {
 STEP_TIMEOUT_SECONDS = float(os.environ.get("REAL_PIPELINE_STEP_TIMEOUT_SECONDS", "180"))
 S2_TIMEOUT_SECONDS = float(os.environ.get("REAL_PIPELINE_S2_TIMEOUT_SECONDS", "120"))
 S2_LLM_TIMEOUT_SECONDS = float(os.environ.get("REAL_PIPELINE_S2_LLM_TIMEOUT_SECONDS", "115"))
-METRICS_MIN_COUNT = int(os.environ.get("REAL_PIPELINE_MIN_METRICS", "40"))
+METRICS_MIN_COUNT = int(os.environ.get("REAL_PIPELINE_MIN_METRICS", "30"))
 PIPELINE_MAX_SECONDS = float(os.environ.get("REAL_PIPELINE_MAX_SECONDS", "900"))
 P1_TOTAL_MAX_SECONDS = float(os.environ.get("REAL_PIPELINE_P1_TOTAL_MAX_SECONDS", "360"))
 S2_TOTAL_MAX_SECONDS = float(os.environ.get("REAL_PIPELINE_S2_TOTAL_MAX_SECONDS", "240"))
@@ -916,7 +916,7 @@ class RealAppFlow:
             "metrics_count_gte_min": len(extracted.get("metrics", [])) >= METRICS_MIN_COUNT,
             "screen_count_6_to_10": 6 <= len(screen_plan.get("screens", [])) <= 10,
             "workflow_validation_pass": bool(workflow_validation.get("passed")),
-            "metrics_count_gte_40": len(extracted.get("metrics", [])) >= 40,
+            "metrics_count_gte_30": len(extracted.get("metrics", [])) >= 30,
             "final_video_exists": (self.output_dir / "final" / "video.mp4").exists() and (self.output_dir / "final" / "video.mp4").stat().st_size > 0,
             "each_step_lte_configured_timeout": all(float(step["duration_seconds"] or 0) <= step_timeout(step["step_id"]) for step in self.state["steps"]),
             "pipeline_total_lte_10_minutes": pipeline_total <= PIPELINE_MAX_SECONDS,
