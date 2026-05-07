@@ -1,12 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_all
+
+edge_tts_datas, edge_tts_binaries, edge_tts_hiddenimports = collect_all('edge_tts')
+
+
 a = Analysis(
     ['app/main.py'],
     pathex=[],
-    binaries=[],
+    binaries=edge_tts_binaries,
     datas=[
         ('workflow.md', '.'),
         ('app/assets', 'app/assets'),
-    ],
+    ] + edge_tts_datas,
     hiddenimports=[
         'customtkinter',
         'pymupdf',
@@ -17,7 +22,17 @@ a = Analysis(
         'edge_tts',
         'edge_tts.voices',
         'aiohttp',
-    ],
+        'aiohttp.client',
+        'aiohttp.connector',
+        'aiohttp.web',
+        'aiosignal',
+        'frozenlist',
+        'multidict',
+        'yarl',
+        'attrs',
+        'charset_normalizer',
+        'async_timeout',
+    ] + edge_tts_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
