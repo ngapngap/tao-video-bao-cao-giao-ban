@@ -16,6 +16,8 @@ from typing import Any
 
 import httpx
 
+from app.video.content_renderer import VideoContentRenderer
+
 
 class RemotionManifest:
     """Manifest để Remotion renderer biết cách render video."""
@@ -363,10 +365,12 @@ class FinalPackager:
         return publish
 
     def package(self, render_plan: dict | None = None, output_path: str | None = None) -> str:
-        """Tạo final/video.mp4 hợp lệ tối thiểu bằng ffmpeg.
+        """Tạo final/video.mp4 có nội dung text từ artifacts đã có.
 
-        Không ghi placeholder bytes rỗng/zero. Nếu runtime không có ffmpeg thì
-        fail rõ ràng để pipeline không publish artifact MP4 không hợp lệ.
+        Final packaging không chạy lại LLM/P1/P2. Nếu có workflow/remotion/tts
+        artifacts, renderer tạo từng scene card có title/tts overlay rồi concat
+        thành MP4 final. Nếu thiếu artifacts trong unit-test/tmp runtime cũ, giữ
+        fallback placeholder hợp lệ để backward-compatible.
         """
         final_dir = Path(self.output_dir) / "final"
         final_dir.mkdir(parents=True, exist_ok=True)
@@ -381,13 +385,22 @@ class FinalPackager:
         if not self._ffmpeg_available():
             raise RuntimeError("ffmpeg not found, cannot create valid MP4")
 
-        self._create_placeholder_mp4_with_ffmpeg(target_path, render_plan or {})
+        if self._has_content_artifacts():
+            result = VideoContentRenderer(self.output_dir).render(target.resolve())
+            if result.duration_seconds <= 10:
+                raise RuntimeError(f"content video duration is too short: {result.duration_seconds:.2f}s")
+        else:
+            self._create_placeholder_mp4_with_ffmpeg(target_path, render_plan or {})
         self._assert_valid_mp4(target_path)
         return os.path.relpath(target_path, self.output_dir).replace(os.sep, "/")
 
     def create_mock_video(self) -> str:
         """Backward-compatible alias: tạo MP4 hợp lệ tối thiểu, không tạo placeholder invalid."""
         return self.package()
+
+    def _has_content_artifacts(self) -> bool:
+        workflow_dir = Path(self.output_dir) / "workflow"
+        return workflow_dir.exists() and any(path.name != "workflow-validation.json" for path in workflow_dir.glob("*.json"))
 
     def _ffmpeg_available(self) -> bool:
         return shutil.which("ffmpeg") is not None
