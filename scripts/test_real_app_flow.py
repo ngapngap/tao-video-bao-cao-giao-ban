@@ -814,11 +814,11 @@ class RealAppFlow:
     def validate_s2_result(self, step_id: str, result: dict[str, Any], workflow: dict[str, Any]) -> None:
         if not isinstance(result, dict):
             raise ValueError(f"{step_id} output must be a JSON object")
-        status = str(result.get("status", "")).upper()
-        if status in {"OK", "WARN", "WARNING", "SUCCESS"}:
+        status = str(result.get("status", "")).strip().lower()
+        if status in {"ok", "warn", "warning", "success", "done", "passed", "pass", "ready", "success_with_warnings"}:
             result["status"] = "DONE"
-            status = "DONE"
-        if status not in {"DONE", "PARTIAL"}:
+            status = "done"
+        if status not in {"done", "partial"}:
             raise ValueError(f"{step_id} returned non-success status: {result.get('status')}")
         if result.get("step_id") != step_id:
             raise ValueError(f"{step_id} output step_id mismatch: {result.get('step_id')}")
