@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from app.main import App
 from app.workflow import WorkflowValidator
 
 
@@ -369,3 +370,37 @@ def test_validate_extracted_report_metrics_and_sections_must_be_lists():
     assert result.passed is False
     assert _codes(result).count("EXTRACTED_REPORT_INVALID") == 2
     assert {error.get("field") for error in _errors(result, "EXTRACTED_REPORT_INVALID")} == {"metrics", "sections"}
+
+
+def test_auto_fix_workflow_removes_duplicate_closings_and_keeps_one_closing_at_end():
+    workflow = _valid_workflow()
+    duplicate_closing = deepcopy(workflow["scenes"][-1])
+    duplicate_closing["scene_id"] = "scene_closing_duplicate"
+    duplicate_closing["title"] = "Kết thúc duplicate cuối"
+    workflow["scenes"].insert(2, duplicate_closing)
+
+    fixed = App._auto_fix_workflow(object.__new__(App), workflow)
+    scenes = fixed["scenes"]
+    result = _validate(fixed, _sample_extracted_report())
+
+    assert result.passed is True
+    assert [scene["scene_type"] for scene in scenes].count("closing") == 1
+    assert scenes[-1]["scene_type"] == "closing"
+    assert scenes[-1]["title"] == "Kết thúc"
+
+
+def test_auto_fix_workflow_removes_duplicate_intros_and_keeps_one_intro_at_start():
+    workflow = _valid_workflow()
+    duplicate_intro = deepcopy(workflow["scenes"][0])
+    duplicate_intro["scene_id"] = "scene_intro_duplicate"
+    duplicate_intro["title"] = "Intro duplicate giữa"
+    workflow["scenes"].insert(2, duplicate_intro)
+
+    fixed = App._auto_fix_workflow(object.__new__(App), workflow)
+    scenes = fixed["scenes"]
+    result = _validate(fixed, _sample_extracted_report())
+
+    assert result.passed is True
+    assert [scene["scene_type"] for scene in scenes].count("intro") == 1
+    assert scenes[0]["scene_type"] == "intro"
+    assert scenes[0]["title"] == "Intro"

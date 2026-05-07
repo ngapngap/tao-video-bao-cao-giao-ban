@@ -937,54 +937,69 @@ class App(ctk.CTk):
         return self._auto_fix_workflow(workflow)
 
     def _auto_fix_workflow(self, workflow: dict[str, Any]) -> dict[str, Any]:
-        """Auto-fix workflow thiếu intro/closing."""
+        """Auto-fix workflow để luôn chỉ có 1 intro đầu và 1 closing cuối."""
+        default_intro = {
+            "scene_id": "scene_intro",
+            "scene_type": "intro",
+            "title": "Giới thiệu",
+            "source_data_keys": [],
+            "tts": {"enabled": True, "text": "Xin chào, đây là báo cáo giao ban.", "voice": "vi-VN-NamMinhNeural"},
+            "duration_policy": {"mode": "tts_first", "min_seconds": 4, "max_seconds": 10},
+        }
+        default_closing = {
+            "scene_id": "scene_closing",
+            "scene_type": "closing",
+            "title": "Kết thúc",
+            "source_data_keys": [],
+            "tts": {"enabled": False, "text": "", "voice": "vi-VN-NamMinhNeural"},
+            "duration_policy": {"mode": "fixed", "min_seconds": 3, "max_seconds": 6},
+        }
+
         scenes = workflow.get("scenes", [])
         if not isinstance(scenes, list):
             scenes = []
+        scenes = [scene for scene in scenes if isinstance(scene, dict)]
         if not scenes:
-            scenes = [
-                {
-                    "scene_id": "scene_intro",
-                    "scene_type": "intro",
-                    "title": "Giới thiệu",
-                    "source_data_keys": [],
-                    "tts": {"enabled": True, "text": "Xin chào, đây là báo cáo giao ban.", "voice": "vi-VN-NamMinhNeural"},
-                    "duration_policy": {"mode": "tts_first", "min_seconds": 4, "max_seconds": 10},
-                },
-                {
-                    "scene_id": "scene_closing",
-                    "scene_type": "closing",
-                    "title": "Kết thúc",
-                    "source_data_keys": [],
-                    "tts": {"enabled": False, "text": "", "voice": "vi-VN-NamMinhNeural"},
-                    "duration_policy": {"mode": "fixed", "min_seconds": 3, "max_seconds": 6},
-                },
-            ]
-        else:
-            if scenes[0].get("scene_type") != "intro":
-                scenes.insert(
-                    0,
-                    {
-                        "scene_id": "scene_intro",
-                        "scene_type": "intro",
-                        "title": "Giới thiệu",
-                        "source_data_keys": [],
-                        "tts": {"enabled": True, "text": "Xin chào, đây là báo cáo giao ban.", "voice": "vi-VN-NamMinhNeural"},
-                        "duration_policy": {"mode": "tts_first", "min_seconds": 4, "max_seconds": 10},
-                    },
-                )
-            if scenes[-1].get("scene_type") != "closing":
-                scenes.append(
-                    {
-                        "scene_id": "scene_closing",
-                        "scene_type": "closing",
-                        "title": "Kết thúc",
-                        "source_data_keys": [],
-                        "tts": {"enabled": False, "text": "", "voice": "vi-VN-NamMinhNeural"},
-                        "duration_policy": {"mode": "fixed", "min_seconds": 3, "max_seconds": 6},
-                    }
-                )
-        workflow["scenes"] = scenes
+            workflow["scenes"] = [default_intro, default_closing]
+            return workflow
+
+        intros = [scene for scene in scenes if scene.get("scene_type") == "intro"]
+        closings = [scene for scene in scenes if scene.get("scene_type") == "closing"]
+        contents = [scene for scene in scenes if scene.get("scene_type") not in {"intro", "closing"}]
+
+        intro = intros[0] if intros else default_intro
+        closing = closings[-1] if closings else default_closing
+        intro["scene_type"] = "intro"
+        closing["scene_type"] = "closing"
+
+        fixed_scenes = [intro] + contents + [closing]
+        seen_scene_ids: set[str] = set()
+        for index, scene in enumerate(fixed_scenes, 1):
+            source_data_keys = scene.get("source_data_keys")
+            if not isinstance(source_data_keys, list):
+                scene["source_data_keys"] = []
+
+            tts = scene.get("tts")
+            if not isinstance(tts, dict):
+                scene["tts"] = {"enabled": scene.get("scene_type") != "closing", "text": str(scene.get("title") or ""), "voice": "vi-VN-NamMinhNeural"}
+            else:
+                tts.setdefault("enabled", scene.get("scene_type") != "closing")
+                tts.setdefault("text", "")
+                tts.setdefault("voice", "vi-VN-NamMinhNeural")
+
+            duration_policy = scene.get("duration_policy")
+            if not isinstance(duration_policy, dict):
+                scene["duration_policy"] = {"mode": "fixed", "min_seconds": 3, "max_seconds": 6} if scene.get("scene_type") == "closing" else {"mode": "tts_first", "min_seconds": 4, "max_seconds": 15}
+
+            scene_id = str(scene.get("scene_id") or "").strip()
+            if not scene_id or scene_id in seen_scene_ids:
+                scene_id = f"SC{index:03d}"
+                scene["scene_id"] = scene_id
+            else:
+                scene["scene_id"] = scene_id
+            seen_scene_ids.add(scene_id)
+
+        workflow["scenes"] = fixed_scenes
         return workflow
 
     def _llm_chat(self, system_prompt: str, input_payload: dict[str, Any], step_id: str, logger: EventLogger, job_id: str, max_tokens: int = 4000) -> dict[str, Any]:
