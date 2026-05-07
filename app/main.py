@@ -995,6 +995,8 @@ class App(ctk.CTk):
             tts_model=str(tts_config.get("model_tts") or ""),
             mock_mode=False,
             timeout=float(self.runtime_config.get("runtime_policy", {}).get("step_timeout_seconds") or 180),
+            tts_engine=str(tts_config.get("tts_engine") or "edge"),
+            default_voice=str(tts_config.get("voice") or "vi-VN-NamMinhNeural"),
         )
 
     def _mock_ai_mode(self) -> bool:
@@ -1006,7 +1008,7 @@ class App(ctk.CTk):
             "scene_id": item.get("scene_id", tts.get("scene_id", "")),
             "enabled": bool(tts.get("enabled", True)),
             "text": str(tts.get("text") or item.get("text") or ""),
-            "voice": str(tts.get("voice") or item.get("voice") or self.runtime_config.get("tts", {}).get("voice") or "vi_female"),
+            "voice": str(tts.get("voice") or item.get("voice") or self.runtime_config.get("tts", {}).get("voice") or "vi-VN-NamMinhNeural"),
         }
 
     def _ensure_render_plan(self, render_plan: dict[str, Any], scene_plan: dict[str, Any], tts_manifest: dict[str, Any]) -> dict[str, Any]:
@@ -1027,7 +1029,7 @@ class App(ctk.CTk):
     def _default_runtime_config(self) -> dict[str, Any]:
         return {
             "llm": {"url_model": "", "default_model": "", "api_key": "", "apikey_model": "", "credential_id_model": ""},
-            "tts": {"url_tts": "", "model_tts": "", "voice": "", "api_key": "", "credential_id_tts": ""},
+            "tts": {"tts_engine": "edge", "url_tts": "", "model_tts": "", "voice": "vi-VN-NamMinhNeural", "api_key": "", "credential_id_tts": ""},
             "runtime_policy": {"step_timeout_seconds": 180, "max_retry": 3, "retry_backoff_seconds": 30, "enable_resume": True},
         }
 

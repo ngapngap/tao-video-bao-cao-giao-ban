@@ -171,7 +171,7 @@ class CreateVideoScreen(ctk.CTkFrame):
         card.grid_columnconfigure(0, weight=1)
         title = ctk.CTkLabel(card, text="Sẵn sàng khởi chạy", font=tokens.FONT_HEADING_LARGE, text_color=tokens.COLOR_TEXT, anchor="w")
         title.grid(row=0, column=0, sticky="ew", padx=tokens.SPACING_XL, pady=(tokens.SPACING_XL, tokens.SPACING_MD))
-        items = (("pdf_valid", "PDF hợp lệ"), ("month_valid", "Tháng báo cáo hợp lệ"), ("template_valid", "Mẫu workflow hợp lệ"), ("llm_ready", "Cấu hình LLM sẵn sàng"), ("tts_ready", "Cấu hình TTS sẵn sàng"), ("output_writable", "Thư mục output ghi được"))
+        items = (("pdf_valid", "PDF hợp lệ"), ("month_valid", "Tháng báo cáo hợp lệ"), ("template_valid", "Mẫu workflow hợp lệ"), ("llm_ready", "Cấu hình LLM sẵn sàng"), ("tts_ready", "TTS sẵn sàng"), ("output_writable", "Thư mục output ghi được"))
         for index, (key, text) in enumerate(items, start=1):
             row_frame = ctk.CTkFrame(card, fg_color="transparent")
             row_frame.grid(row=index, column=0, sticky="ew", padx=tokens.SPACING_XL, pady=(0, tokens.SPACING_SM))
@@ -181,7 +181,7 @@ class CreateVideoScreen(ctk.CTkFrame):
             label = ctk.CTkLabel(row_frame, text=text, font=tokens.FONT_BODY, text_color=tokens.COLOR_MUTED, anchor="w")
             label.grid(row=0, column=1, sticky="ew")
             self.readiness_widgets[key] = (indicator, label)
-        self.readiness_hint = ctk.CTkLabel(card, text="Cần PDF, tháng hợp lệ và tối thiểu 4/6 điều kiện pass để bật nút bắt đầu.", font=tokens.FONT_SMALL, text_color=tokens.COLOR_MUTED, anchor="w", wraplength=540)
+        self.readiness_hint = ctk.CTkLabel(card, text="TTS có thể dùng edge-tts local không cần key hoặc API TTS ngoài khi đã cấu hình URL/key.", font=tokens.FONT_SMALL, text_color=tokens.COLOR_MUTED, anchor="w", wraplength=540)
         self.readiness_hint.grid(row=7, column=0, sticky="ew", padx=tokens.SPACING_XL, pady=(tokens.SPACING_SM, tokens.SPACING_XL))
 
     def _build_job_summary_card(self, master: ctk.CTkFrame) -> None:

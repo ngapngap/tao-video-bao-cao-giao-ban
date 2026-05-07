@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
+import importlib
 import json
 import os
 import subprocess
@@ -82,7 +84,9 @@ class RemotionManifest:
 
 
 class TTSGenerator:
-    """Tạo TTS audio cho từng scene (mock mode + real mode)."""
+    """Tạo TTS audio cho từng scene bằng edge-tts, API TTS hoặc mock."""
+
+    DEFAULT_VOICES = ("vi-VN-NamMinhNeural", "vi-VN-HoaiMyNeural")
 
     def __init__(
         self,
@@ -92,12 +96,16 @@ class TTSGenerator:
         tts_model: str = "",
         mock_mode: bool = True,
         timeout: float = 120.0,
+        tts_engine: str = "mock",
+        default_voice: str = "vi-VN-NamMinhNeural",
     ):
         self.output_dir = output_dir
         self.tts_url = tts_url.rstrip("/")
         self.tts_api_key = tts_api_key
         self.tts_model = tts_model
         self.mock_mode = mock_mode
+        self.tts_engine = self._normalize_engine(tts_engine, mock_mode)
+        self.default_voice = default_voice or "vi-VN-NamMinhNeural"
         self.timeout = timeout
 
     def generate_all(self, scenes: list[dict]) -> dict:
@@ -118,10 +126,15 @@ class TTSGenerator:
                 manifest[scene_id] = {"audio_path": None, "duration_seconds": 0}
                 continue
 
-            if self.mock_mode:
+            voice = tts.get("voice") or self.default_voice
+            if self.tts_engine == "mock":
                 result = self._generate_mock(scene_id, text)
+            elif self.tts_engine == "edge":
+                result = self._generate_edge(scene_id, text, voice)
+            elif self.tts_engine == "api":
+                result = self._generate_real(scene_id, text, voice)
             else:
-                result = self._generate_real(scene_id, text, tts.get("voice", ""))
+                raise ValueError(f"TTS engine không hỗ trợ: {self.tts_engine}")
             manifest[scene_id] = result
 
         return manifest
@@ -137,6 +150,30 @@ class TTSGenerator:
         with open(audio_path, "wb") as file:
             file.write(b"")
 
+        return {"audio_path": f"tts/{scene_id}.mp3", "duration_seconds": round(duration, 1)}
+
+    def _generate_edge(self, scene_id: str, text: str, voice: str) -> dict:
+        """Tạo MP3 bằng edge-tts local-compatible async client."""
+        edge_tts = importlib.import_module("edge_tts")
+        tts_dir = Path(self.output_dir) / "tts"
+        tts_dir.mkdir(parents=True, exist_ok=True)
+        audio_file = tts_dir / f"{scene_id}.mp3"
+        selected_voice = voice or self.default_voice
+
+        async def _save() -> None:
+            communicate = edge_tts.Communicate(text, selected_voice)
+            await communicate.save(str(audio_file))
+
+        try:
+            asyncio.run(_save())
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_save())
+            finally:
+                loop.close()
+
+        duration = self.probe_audio_duration(str(audio_file)) or self._estimate_duration_seconds(text)
         return {"audio_path": f"tts/{scene_id}.mp3", "duration_seconds": round(duration, 1)}
 
     def _generate_real(self, scene_id: str, text: str, voice: str) -> dict:
@@ -216,11 +253,17 @@ class TTSGenerator:
         return 0.0
 
     def test_connection(self) -> tuple[bool, str]:
-        """Gọi TTS thật bằng câu ngắn để kiểm tra endpoint."""
-        if self.mock_mode:
+        """Kiểm tra engine TTS hiện tại."""
+        if self.tts_engine == "mock":
             return True, "Mock test: OK"
+        if self.tts_engine == "edge":
+            try:
+                importlib.import_module("edge_tts")
+                return True, f"edge-tts local OK! Voice: {self.default_voice}"
+            except ImportError as exc:
+                return False, f"edge-tts chưa khả dụng: {exc}"
         try:
-            result = self._generate_real("healthcheck", "Kiểm tra kết nối TTS.", "")
+            result = self._generate_real("healthcheck", "Kiểm tra kết nối TTS.", self.default_voice)
             path = Path(self.output_dir) / str(result["audio_path"])
             if path.exists():
                 path.unlink(missing_ok=True)
@@ -232,6 +275,13 @@ class TTSGenerator:
             return False, f"Không kết nối được: HTTP {exc.response.status_code} - {detail}"
         except Exception as exc:  # noqa: BLE001 - hiển thị lỗi cụ thể cho UI
             return False, f"Không kết nối được: {exc}"
+
+    @staticmethod
+    def _normalize_engine(tts_engine: str, mock_mode: bool) -> str:
+        if mock_mode:
+            return "mock"
+        normalized = (tts_engine or "api").strip().lower()
+        return normalized if normalized in {"edge", "api", "mock"} else "api"
 
     @staticmethod
     def _estimate_duration_seconds(text: str) -> float:

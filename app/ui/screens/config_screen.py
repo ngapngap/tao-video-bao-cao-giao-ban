@@ -18,6 +18,11 @@ DEFAULT_LLM_URL = "http://10.48.240.50:20128/v1"
 DEFAULT_LLM_MODEL = "minimax/MiniMax-M2.7"
 DEFAULT_TTS_URL = "http://10.48.240.50:20128/v1"
 DEFAULT_TTS_MODEL = "edge-tts/vi-VN-NamMinhNeural"
+DEFAULT_TTS_ENGINE_LABEL = "edge-tts local"
+DEFAULT_TTS_VOICE = "vi-VN-NamMinhNeural"
+TTS_ENGINE_LABEL_TO_VALUE = {"edge-tts local": "edge", "API TTS ngoài": "api"}
+TTS_ENGINE_VALUE_TO_LABEL = {value: label for label, value in TTS_ENGINE_LABEL_TO_VALUE.items()}
+TTS_VOICES = ["vi-VN-NamMinhNeural", "vi-VN-HoaiMyNeural"]
 MODEL_CREDENTIAL_ID = "tao-video-bao-cao/model/default"
 TTS_CREDENTIAL_ID = "tao-video-bao-cao/tts/default"
 
@@ -75,13 +80,14 @@ class ConfigScreen(ctk.CTkFrame):
 
     def _build_tts_card(self) -> None:
         self._build_card_heading(self.tts_card, "Giọng đọc TTS", row=0)
-        self.url_tts_entry, self.url_tts_error = self._build_entry_field(self.tts_card, row=1, label="URL TTS", placeholder=DEFAULT_TTS_URL)
-        self.model_tts_entry, self.model_tts_error = self._build_entry_field(self.tts_card, row=2, label="Model TTS", placeholder=DEFAULT_TTS_MODEL)
-        self.apikey_tts_entry, self.apikey_tts_error = self._build_key_field(self.tts_card, row=3, label="API key TTS", toggle_command=self.toggle_tts_key)
-        self.voice_entry, _ = self._build_entry_field(self.tts_card, row=4, label="Giọng đọc (tùy chọn)", placeholder="vi-VN-NamMinhNeural")
-        self.credential_id_tts_entry, _ = self._build_entry_field(self.tts_card, row=5, label="Credential ID TTS", placeholder="Chưa lưu", readonly=True)
+        self.tts_engine_combo, self.tts_engine_error = self._build_tts_engine_selector(self.tts_card, row=1)
+        self.url_tts_entry, self.url_tts_error = self._build_entry_field(self.tts_card, row=2, label="URL TTS", placeholder=DEFAULT_TTS_URL)
+        self.model_tts_entry, self.model_tts_error = self._build_entry_field(self.tts_card, row=3, label="Model TTS", placeholder=DEFAULT_TTS_MODEL)
+        self.apikey_tts_entry, self.apikey_tts_error = self._build_key_field(self.tts_card, row=4, label="API key TTS", toggle_command=self.toggle_tts_key)
+        self.voice_combo, self.voice_entry, _ = self._build_voice_selector(self.tts_card, row=5)
+        self.credential_id_tts_entry, _ = self._build_entry_field(self.tts_card, row=6, label="Credential ID TTS", placeholder="Chưa lưu", readonly=True)
         self.test_tts_button = self._build_secondary_button(self.tts_card, text="Kiểm tra TTS", command=self.test_tts)
-        self.test_tts_button.grid(row=6, column=0, sticky="w", padx=tokens.SPACING_XL, pady=(0, tokens.SPACING_XL))
+        self.test_tts_button.grid(row=7, column=0, sticky="w", padx=tokens.SPACING_XL, pady=(0, tokens.SPACING_XL))
 
     def _build_runtime_card(self) -> None:
         self._build_card_heading(self.runtime_card, "Chính sách runtime", row=0)
@@ -173,6 +179,35 @@ class ConfigScreen(ctk.CTkFrame):
         error_label.grid(row=2, column=0, sticky="ew", pady=(tokens.SPACING_XS, 0))
         return combo, entry, error_label
 
+    def _build_tts_engine_selector(self, master: ctk.CTkFrame, row: int) -> tuple[ctk.CTkOptionMenu, ctk.CTkLabel]:
+        frame = ctk.CTkFrame(master, fg_color="transparent")
+        frame.grid(row=row, column=0, sticky="ew", padx=tokens.SPACING_XL, pady=(0, tokens.SPACING_MD))
+        frame.grid_columnconfigure(0, weight=1)
+        label = ctk.CTkLabel(frame, text="TTS engine", font=tokens.FONT_BODY_BOLD, text_color=tokens.COLOR_TEXT, anchor="w")
+        label.grid(row=0, column=0, sticky="ew", pady=(0, tokens.SPACING_XS))
+        combo = ctk.CTkOptionMenu(frame, values=list(TTS_ENGINE_LABEL_TO_VALUE.keys()), height=36, corner_radius=tokens.RADIUS_MD, fg_color=tokens.COLOR_SURFACE, button_color=tokens.COLOR_PRIMARY, button_hover_color=tokens.COLOR_PRIMARY_HOVER, dropdown_fg_color=tokens.COLOR_SURFACE, dropdown_hover_color=tokens.COLOR_BACKGROUND, text_color=tokens.COLOR_TEXT, font=tokens.FONT_BODY, command=lambda _value: self._sync_tts_engine_fields())
+        combo.set(DEFAULT_TTS_ENGINE_LABEL)
+        combo.grid(row=1, column=0, sticky="ew")
+        error_label = ctk.CTkLabel(frame, text="", font=tokens.FONT_SMALL, text_color=tokens.COLOR_ERROR, anchor="w")
+        error_label.grid(row=2, column=0, sticky="ew", pady=(tokens.SPACING_XS, 0))
+        return combo, error_label
+
+    def _build_voice_selector(self, master: ctk.CTkFrame, row: int) -> tuple[ctk.CTkComboBox, ctk.CTkEntry, ctk.CTkLabel]:
+        frame = ctk.CTkFrame(master, fg_color="transparent")
+        frame.grid(row=row, column=0, sticky="ew", padx=tokens.SPACING_XL, pady=(0, tokens.SPACING_MD))
+        frame.grid_columnconfigure(0, weight=1)
+        label = ctk.CTkLabel(frame, text="Giọng đọc", font=tokens.FONT_BODY_BOLD, text_color=tokens.COLOR_TEXT, anchor="w")
+        label.grid(row=0, column=0, sticky="ew", pady=(0, tokens.SPACING_XS))
+        combo = ctk.CTkComboBox(frame, values=TTS_VOICES, height=36, corner_radius=tokens.RADIUS_MD, border_width=tokens.BORDER_WIDTH, border_color=tokens.COLOR_BORDER, fg_color=tokens.COLOR_SURFACE, button_color=tokens.COLOR_SURFACE, button_hover_color=tokens.COLOR_BACKGROUND, dropdown_fg_color=tokens.COLOR_SURFACE, dropdown_hover_color=tokens.COLOR_BACKGROUND, text_color=tokens.COLOR_TEXT, dropdown_text_color=tokens.COLOR_TEXT, font=tokens.FONT_BODY, state="normal")
+        combo.set(DEFAULT_TTS_VOICE)
+        combo.grid(row=1, column=0, sticky="ew")
+        entry = ctk.CTkEntry(frame, height=36, corner_radius=tokens.RADIUS_MD, border_width=tokens.BORDER_WIDTH, border_color=tokens.COLOR_BORDER, fg_color=tokens.COLOR_SURFACE, text_color=tokens.COLOR_TEXT, placeholder_text=DEFAULT_TTS_VOICE, font=tokens.FONT_BODY)
+        entry.grid(row=1, column=0, sticky="ew")
+        entry.grid_remove()
+        error_label = ctk.CTkLabel(frame, text="", font=tokens.FONT_SMALL, text_color=tokens.COLOR_ERROR, anchor="w")
+        error_label.grid(row=2, column=0, sticky="ew", pady=(tokens.SPACING_XS, 0))
+        return combo, entry, error_label
+
     def _build_status_row(self, master: ctk.CTkFrame, row: int, label: str, value: str, wraplength: int = 240) -> ctk.CTkLabel:
         frame = ctk.CTkFrame(master, fg_color="transparent")
         frame.grid(row=row, column=0, sticky="ew", padx=tokens.SPACING_XL, pady=(0, tokens.SPACING_MD))
@@ -202,9 +237,13 @@ class ConfigScreen(ctk.CTkFrame):
     def validate_config(self) -> bool:
         valid = True
         valid &= self._validate_url(self.url_model_entry, self.url_model_error)
-        valid &= self._validate_url(self.url_tts_entry, self.url_tts_error)
         valid &= self._validate_required_model()
-        valid &= self._validate_required(self.model_tts_entry, self.model_tts_error, "Model TTS không được rỗng.")
+        if self._current_tts_engine() == "api":
+            valid &= self._validate_url(self.url_tts_entry, self.url_tts_error)
+            valid &= self._validate_required(self.model_tts_entry, self.model_tts_error, "Model TTS không được rỗng.")
+        else:
+            self.url_tts_error.configure(text="")
+            self.model_tts_error.configure(text="")
         return bool(valid)
 
     def _validate_url(self, entry: ctk.CTkEntry, error_label: ctk.CTkLabel) -> bool:
@@ -243,17 +282,18 @@ class ConfigScreen(ctk.CTkFrame):
             return
         model_key = self.apikey_model_entry.get().strip()
         tts_key = self.apikey_tts_entry.get().strip()
+        tts_engine = self._current_tts_engine()
         existing_model_key = self.credential_store.retrieve(MODEL_CREDENTIAL_ID)
         existing_tts_key = self.credential_store.retrieve(TTS_CREDENTIAL_ID)
         if model_key:
             self.credential_store.store(MODEL_CREDENTIAL_ID, model_key)
-        if tts_key:
+        if tts_key and tts_engine == "api":
             self.credential_store.store(TTS_CREDENTIAL_ID, tts_key)
         if not model_key and not existing_model_key:
             self.apikey_model_error.configure(text="API key model không được rỗng khi chưa có key đã lưu.")
             self.save_status_value.configure(text="Cấu hình chưa hợp lệ", text_color=tokens.COLOR_ERROR)
             return
-        if not tts_key and not existing_tts_key:
+        if tts_engine == "api" and not tts_key and not existing_tts_key:
             self.apikey_tts_error.configure(text="API key TTS không được rỗng khi chưa có key đã lưu.")
             self.save_status_value.configure(text="Cấu hình chưa hợp lệ", text_color=tokens.COLOR_ERROR)
             return
@@ -277,9 +317,11 @@ class ConfigScreen(ctk.CTkFrame):
     def reset_form(self) -> None:
         self._set_entry_value(self.url_model_entry, DEFAULT_LLM_URL)
         self._reset_model_selector()
+        self.tts_engine_combo.set(DEFAULT_TTS_ENGINE_LABEL)
         self._set_entry_value(self.url_tts_entry, DEFAULT_TTS_URL)
         self._set_entry_value(self.model_tts_entry, DEFAULT_TTS_MODEL)
-        self._set_entry_value(self.voice_entry, "")
+        self.voice_combo.set(DEFAULT_TTS_VOICE)
+        self._set_entry_value(self.voice_entry, DEFAULT_TTS_VOICE)
         self._set_entry_value(self.step_timeout_seconds_entry, "600")
         self._set_entry_value(self.max_retry_entry, "3")
         self._set_entry_value(self.retry_backoff_seconds_entry, "30")
@@ -301,6 +343,7 @@ class ConfigScreen(ctk.CTkFrame):
         self.secret_storage_value.configure(text="Windows Credential Manager (chưa xác minh)")
         self.save_status_value.configure(text="Chưa lưu cấu hình", text_color=tokens.COLOR_MUTED)
         self._clear_validation_state()
+        self._sync_tts_engine_fields()
         self._sync_key_buttons()
 
     def test_llm(self) -> None:
@@ -390,6 +433,8 @@ class ConfigScreen(ctk.CTkFrame):
                 tts_model=self.model_tts_entry.get().strip(),
                 mock_mode=False,
                 timeout=20.0,
+                tts_engine=self._current_tts_engine(),
+                default_voice=self._current_tts_voice(),
             ).test_connection()
         color = tokens.COLOR_SUCCESS if ok else tokens.COLOR_ERROR
         self.after(0, lambda: self._finish_connection_test(result_label, button, message, color))
@@ -427,11 +472,12 @@ class ConfigScreen(ctk.CTkFrame):
                 "credential_id_model": MODEL_CREDENTIAL_ID if self.has_saved_keys else "",
             },
             "tts": {
+                "tts_engine": self._current_tts_engine(),
                 "url_tts": self.url_tts_entry.get().strip(),
                 "model_tts": self.model_tts_entry.get().strip(),
-                "voice": self.voice_entry.get().strip(),
+                "voice": self._current_tts_voice(),
                 "api_key": self._current_secret(self.apikey_tts_entry, TTS_CREDENTIAL_ID),
-                "credential_id_tts": TTS_CREDENTIAL_ID if self.has_saved_keys else "",
+                "credential_id_tts": TTS_CREDENTIAL_ID if self.has_saved_keys and self._current_tts_engine() == "api" else "",
             },
             "runtime_policy": {
                 "step_timeout_seconds": self._int_or_default(self.step_timeout_seconds_entry.get(), 600),
@@ -446,7 +492,10 @@ class ConfigScreen(ctk.CTkFrame):
         llm = config["llm"]
         tts = config["tts"]
         llm_ready = bool(llm["url_model"] and llm["default_model"] and llm["api_key"])
-        tts_ready = bool(tts["url_tts"] and tts["model_tts"] and tts["api_key"])
+        if tts.get("tts_engine") == "edge":
+            tts_ready = True
+        else:
+            tts_ready = bool(tts["url_tts"] and tts["model_tts"] and tts["api_key"])
         return llm_ready, tts_ready
 
     def _validate_connection_fields(self, kind: str) -> str:
@@ -456,6 +505,8 @@ class ConfigScreen(ctk.CTkFrame):
             secret = self._current_secret(self.apikey_model_entry, MODEL_CREDENTIAL_ID)
             label = "LLM"
         else:
+            if self._current_tts_engine() == "edge":
+                return ""
             url = self.url_tts_entry.get().strip()
             model = self.model_tts_entry.get().strip()
             secret = self._current_secret(self.apikey_tts_entry, TTS_CREDENTIAL_ID)
@@ -472,6 +523,37 @@ class ConfigScreen(ctk.CTkFrame):
 
     def _current_secret(self, entry: ctk.CTkEntry, credential_id: str) -> str:
         return entry.get().strip() or self.credential_store.retrieve(credential_id) or ""
+
+    def _current_tts_engine(self) -> str:
+        label = self.tts_engine_combo.get().strip()
+        return TTS_ENGINE_LABEL_TO_VALUE.get(label, "edge")
+
+    def _current_tts_voice(self) -> str:
+        if self._current_tts_engine() == "edge":
+            return self.voice_combo.get().strip() or DEFAULT_TTS_VOICE
+        return self.voice_entry.get().strip() or DEFAULT_TTS_VOICE
+
+    def _sync_tts_engine_fields(self) -> None:
+        if self._current_tts_engine() == "edge":
+            self.url_tts_entry.configure(state="disabled")
+            self.model_tts_entry.configure(state="disabled")
+            self.apikey_tts_entry.configure(state="disabled", placeholder_text="edge-tts local không cần API key")
+            self.toggle_tts_key_button.configure(state="disabled")
+            self.voice_entry.grid_remove()
+            self.voice_combo.grid()
+            self.voice_combo.configure(state="normal")
+            self.tts_engine_error.configure(text="edge-tts local không cần URL/model/API key.", text_color=tokens.COLOR_MUTED)
+            self.url_tts_error.configure(text="")
+            self.model_tts_error.configure(text="")
+            self.apikey_tts_error.configure(text="")
+        else:
+            self.url_tts_entry.configure(state="normal")
+            self.model_tts_entry.configure(state="normal")
+            self.apikey_tts_entry.configure(state="normal", placeholder_text="Nhập API key")
+            self.toggle_tts_key_button.configure(state="normal")
+            self.voice_combo.grid_remove()
+            self.voice_entry.grid()
+            self.tts_engine_error.configure(text="API TTS ngoài cần URL, model và API key.", text_color=tokens.COLOR_MUTED)
 
     def _current_default_model(self) -> str:
         if self.default_model_entry.winfo_ismapped():
@@ -511,10 +593,11 @@ class ConfigScreen(ctk.CTkFrame):
             self.delete_key_button.configure(state=state)
 
     def _clear_validation_state(self) -> None:
-        for entry in (self.url_model_entry, self.default_model_entry, self.url_tts_entry, self.model_tts_entry, self.step_timeout_seconds_entry, self.max_retry_entry, self.retry_backoff_seconds_entry):
+        for entry in (self.url_model_entry, self.default_model_entry, self.url_tts_entry, self.model_tts_entry, self.voice_entry, self.step_timeout_seconds_entry, self.max_retry_entry, self.retry_backoff_seconds_entry):
             entry.configure(border_color=tokens.COLOR_BORDER)
         self.default_model_combo.configure(border_color=tokens.COLOR_BORDER)
-        for error_label in (self.url_model_error, self.default_model_error, self.apikey_model_error, self.url_tts_error, self.model_tts_error, self.apikey_tts_error, self.step_timeout_seconds_error, self.max_retry_error, self.retry_backoff_seconds_error):
+        self.voice_combo.configure(border_color=tokens.COLOR_BORDER)
+        for error_label in (self.url_model_error, self.default_model_error, self.apikey_model_error, self.tts_engine_error, self.url_tts_error, self.model_tts_error, self.apikey_tts_error, self.step_timeout_seconds_error, self.max_retry_error, self.retry_backoff_seconds_error):
             error_label.configure(text="")
 
     def _set_entry_value(self, entry: ctk.CTkEntry, value: str) -> None:
