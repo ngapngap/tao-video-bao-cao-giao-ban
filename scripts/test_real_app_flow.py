@@ -81,6 +81,8 @@ STEP_TIMEOUTS = {
 STEP_TIMEOUT_SECONDS = float(os.environ.get("REAL_PIPELINE_STEP_TIMEOUT_SECONDS", "180"))
 S2_TIMEOUT_SECONDS = float(os.environ.get("REAL_PIPELINE_S2_TIMEOUT_SECONDS", "120"))
 S2_LLM_TIMEOUT_SECONDS = float(os.environ.get("REAL_PIPELINE_S2_LLM_TIMEOUT_SECONDS", "115"))
+ACCEPTANCE_MODE = os.environ.get("REAL_PIPELINE_ACCEPTANCE", "strict").strip().lower()
+VIDEO_ONLY_ACCEPTANCE = ACCEPTANCE_MODE == "video_only"
 METRICS_MIN_COUNT = int(os.environ.get("REAL_PIPELINE_MIN_METRICS", "30"))
 PIPELINE_MAX_SECONDS = float(os.environ.get("REAL_PIPELINE_MAX_SECONDS", "900"))
 P1_TOTAL_MAX_SECONDS = float(os.environ.get("REAL_PIPELINE_P1_TOTAL_MAX_SECONDS", "360"))
@@ -364,13 +366,27 @@ class RealAppFlow:
                     continue
                 normalized_citations.append(
                     {
-                        "page_no": citation.get("page_no"),
+                        "page_no": self.normalize_page_no(citation.get("page_no")),
                         "source_snippet": str(citation.get("source_snippet", "")),
                         "confidence": self.normalize_confidence(citation.get("confidence", 0.0)),
                     }
                 )
             metric["citations"] = normalized_citations
         return metric
+
+    def normalize_page_no(self, value: Any) -> int | None:
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value if value > 0 else None
+        if isinstance(value, float):
+            page_no = int(value)
+            return page_no if page_no > 0 else None
+        match = re.search(r"\d+", str(value))
+        if not match:
+            return None
+        page_no = int(match.group(0))
+        return page_no if page_no > 0 else None
 
     def normalize_confidence(self, value: Any) -> float:
         if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -529,7 +545,7 @@ class RealAppFlow:
         self.context["p1_1_chunk_timings"] = sorted(timings, key=lambda item: item["chunk_index"])
         metrics_count = len(normalized.get("metrics", []))
         self.context["metrics_count"] = metrics_count
-        if metrics_count < METRICS_MIN_COUNT:
+        if not VIDEO_ONLY_ACCEPTANCE and metrics_count < METRICS_MIN_COUNT:
             raise ValueError(f"metrics count must be >= {METRICS_MIN_COUNT}, got {metrics_count}")
         if not validation.passed:
             raise ValueError(f"Extracted report validation failed: {validation.errors}")
@@ -878,6 +894,14 @@ class RealAppFlow:
         pipeline_total = float(self.context.get("wall_clock_total_seconds") or sum(durations.values()))
         slow_steps = {step_id: seconds for step_id, seconds in durations.items() if seconds > step_timeout(step_id)}
         s2_slow = {step_id: durations.get(step_id, 0) for step_id in S2_ARTIFACTS if durations.get(step_id, 0) > step_timeout(step_id)}
+        final_video = self.output_dir / "final" / "video.mp4"
+        if VIDEO_ONLY_ACCEPTANCE:
+            for step in self.state["steps"]:
+                if step["status"] != "DONE":
+                    raise ValueError(f"hard-fail or incomplete step detected: {step['step_id']}={step['status']}")
+            if not final_video.exists() or final_video.stat().st_size <= 0:
+                raise ValueError("video_only acceptance failed: final/video.mp4 missing or empty")
+            return
         if p1_total > P1_TOTAL_MAX_SECONDS:
             raise ValueError(f"P1.1+P1.1b+P1.2 total must be <= {P1_TOTAL_MAX_SECONDS}s, got {p1_total:.2f}s")
         if s2_total > S2_TOTAL_MAX_SECONDS:
@@ -929,6 +953,7 @@ class RealAppFlow:
         }
         summary = {
             "job_id": JOB_ID,
+            "acceptance_mode": ACCEPTANCE_MODE,
             "output_dir": self.output_dir.as_posix(),
             "pdf_path": PDF_PATH.as_posix(),
             "url": URL,
