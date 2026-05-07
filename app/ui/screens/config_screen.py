@@ -14,9 +14,9 @@ from app.security.credential_store import CredentialStore
 from app.ui import tokens
 from app.video.remotion_handoff import TTSGenerator
 
-DEFAULT_LLM_URL = "http://10.48.240.50:20128/v1"
-DEFAULT_LLM_MODEL = "minimax/MiniMax-M2.7"
-DEFAULT_TTS_URL = "http://10.48.240.50:20128/v1"
+DEFAULT_LLM_URL = ""
+DEFAULT_LLM_MODEL = ""
+DEFAULT_TTS_URL = ""
 DEFAULT_TTS_MODEL = "edge-tts/vi-VN-NamMinhNeural"
 DEFAULT_TTS_ENGINE_LABEL = "edge-tts local"
 DEFAULT_TTS_VOICE = "vi-VN-NamMinhNeural"
