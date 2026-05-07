@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -37,6 +38,7 @@ class SceneCard:
     title: str
     tts_text: str
     duration_seconds: float
+    audio_path: Path | None = None
 
 
 class VideoContentRenderer:
@@ -44,8 +46,9 @@ class VideoContentRenderer:
 
     MIN_TOTAL_DURATION_SECONDS = 10.0
 
-    def __init__(self, job_dir: str | Path):
+    def __init__(self, job_dir: str | Path, require_real_audio: bool = True):
         self.job_dir = Path(job_dir)
+        self.require_real_audio = require_real_audio
 
     def render(self, output_path: str | Path = "final/video.mp4") -> RenderResult:
         """Render all workflow scenes to an MP4 and validate the output with ffprobe."""
@@ -88,43 +91,45 @@ class VideoContentRenderer:
         segments: list[Path] = []
         for index, scene in enumerate(scenes, start=1):
             segment = tmp_dir / f"scene_{index:03d}.mp4"
-            title_file = tmp_dir / f"scene_{index:03d}_title.txt"
-            body_file = tmp_dir / f"scene_{index:03d}_body.txt"
-            footer_file = tmp_dir / f"scene_{index:03d}_footer.txt"
-            title_file.write_text(self._wrap_text(scene.title, 42), encoding="utf-8")
-            body_file.write_text(self._wrap_text(scene.tts_text, 58), encoding="utf-8")
-            footer_file.write_text(
-                f"{index:02d}/{len(scenes):02d} · {scene.scene_type.upper()} · {scene.scene_id}",
-                encoding="utf-8",
-            )
-
-            color = self._background_color(index, scene.scene_type)
-            vf = ",".join(
-                [
-                    self._drawtext(title_file, fontsize=58, x=120, y=150, box=True),
-                    self._drawtext(body_file, fontsize=38, x=120, y=360, box=True, line_spacing=14),
-                    self._drawtext(footer_file, fontsize=30, x=120, y=940, box=False),
-                ]
-            )
+            duration = max(2.0, scene.duration_seconds)
+            vf = self._scene_filter(scene, index, len(scenes), tmp_dir)
             cmd = [
                 "ffmpeg",
                 "-y",
                 "-f",
                 "lavfi",
                 "-i",
-                f"color=c={color}:s=1920x1080:d={scene.duration_seconds:.3f}",
-                "-vf",
-                vf,
-                "-r",
-                "30",
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
-                "-movflags",
-                "+faststart",
-                str(segment),
+                f"color=c={self._background_color(index, scene.scene_type)}:s=1920x1080:d={duration:.3f}",
             ]
+            audio_path = self._valid_audio_path(scene.audio_path)
+            if audio_path:
+                cmd.extend(["-i", str(audio_path), "-t", f"{duration:.3f}"])
+            else:
+                cmd.extend(["-f", "lavfi", "-t", f"{duration:.3f}", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"])
+            cmd.extend(
+                [
+                    "-vf",
+                    vf,
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "1:a:0",
+                    "-r",
+                    "30",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "128k",
+                    "-shortest",
+                    "-movflags",
+                    "+faststart",
+                    str(segment),
+                ]
+            )
             self._run(cmd, f"ffmpeg failed to render segment {scene.scene_id}")
             segments.append(segment)
         return segments
@@ -143,6 +148,8 @@ class VideoContentRenderer:
             str(list_file),
             "-c",
             "copy",
+            "-movflags",
+            "+faststart",
             str(target),
         ]
         self._run(cmd, "ffmpeg failed to concatenate video segments")
@@ -156,8 +163,22 @@ class VideoContentRenderer:
                 continue
             scene_id = str(scene.get("scene_id") or f"scene_{index:03d}")
             title = str(scene.get("title") or scene.get("objective") or f"Scene {index}")
-            tts_text = self._scene_tts_text(scene, tts_by_scene.get(scene_id, {}))
-            duration = durations_by_scene.get(scene_id) or self._duration_from_policy(scene, tts_text)
+            tts_item = tts_by_scene.get(scene_id, {})
+            tts_text = self._scene_tts_text(scene, tts_item)
+            tts_enabled = bool(scene.get("tts", {}).get("enabled", False) or tts_item.get("enabled", False))
+            audio_path = self._resolve_audio_path(tts_item.get("audio_path") or scene.get("tts", {}).get("audio_path"))
+            if audio_path is None:
+                audio_path = self.job_dir / "tts" / f"{scene_id}.mp3"
+            audio_duration = self._probe_audio_duration(audio_path) if audio_path else 0.0
+            if tts_enabled and self.require_real_audio:
+                if not audio_path or not audio_path.exists() or audio_path.stat().st_size <= 1024:
+                    raise RuntimeError(f"Scene {scene_id} has TTS enabled but audio file is missing/too small: {audio_path}")
+                if audio_duration <= 0:
+                    raise RuntimeError(f"Scene {scene_id} audio has invalid duration: {audio_path}")
+                volume = self._probe_audio_volume(audio_path)
+                if volume is None or volume[0] == float("-inf"):
+                    raise RuntimeError(f"Scene {scene_id} audio is silent or volume cannot be parsed: {audio_path}")
+            duration = audio_duration or durations_by_scene.get(scene_id) or self._duration_from_policy(scene, tts_text)
             cards.append(
                 SceneCard(
                     scene_id=scene_id,
@@ -165,6 +186,7 @@ class VideoContentRenderer:
                     title=title,
                     tts_text=tts_text or title,
                     duration_seconds=duration,
+                    audio_path=audio_path if audio_duration > 0 else None,
                 )
             )
         return cards
@@ -175,10 +197,10 @@ class VideoContentRenderer:
 
     def _duration_from_policy(self, scene: dict[str, Any], tts_text: str) -> float:
         policy = scene.get("duration_policy") if isinstance(scene.get("duration_policy"), dict) else {}
-        min_seconds = self._number(policy.get("min_seconds"), 3.0)
-        max_seconds = self._number(policy.get("max_seconds"), 10.0)
-        estimated = max(len(tts_text) / 18.0, min_seconds)
-        return max(2.0, min(estimated, max_seconds))
+        min_seconds = self._number(policy.get("min_seconds"), 5.0)
+        max_seconds = self._number(policy.get("max_seconds"), 18.0)
+        estimated = max(len(tts_text.split()) / 2.55, min_seconds)
+        return max(3.5, min(estimated, max_seconds))
 
     def _tts_items_by_scene(self, tts_script: dict[str, Any]) -> dict[str, dict[str, Any]]:
         items = tts_script.get("items")
@@ -255,20 +277,58 @@ class VideoContentRenderer:
         except ValueError as exc:
             raise RuntimeError(f"ffprobe returned invalid duration: {result.stdout!r}") from exc
 
-    def _drawtext(self, text_file: Path, fontsize: int, x: int, y: int, box: bool, line_spacing: int = 8) -> str:
+    def _scene_filter(self, scene: SceneCard, index: int, total: int, tmp_dir: Path) -> str:
+        filters = [
+            "drawbox=x=0:y=0:w=1920:h=1080:color=0x020617@0.18:t=fill",
+            "drawbox=x=74:y=70:w=1772:h=92:color=0x0F172A@0.55:t=fill",
+            "drawbox=x=88:y=214:w=1744:h=760:color=0x0B1220@0.66:t=fill",
+            "drawbox=x=88:y=214:w=1744:h=760:color=0x60A5FA@0.22:t=2",
+            "drawbox=x=118:y=300:w=530:h=196:color=0x1E40AF@0.42:t=fill",
+            "drawbox=x=692:y=300:w=530:h=196:color=0x0F766E@0.40:t=fill",
+            "drawbox=x=1266:y=300:w=530:h=196:color=0x92400E@0.38:t=fill",
+        ]
+        filters.extend(self._draw_lines(tmp_dir, f"scene_{index:03d}_eyebrow", ["BÁO CÁO GIAO BAN · THÁNG 03/2026"], 96, 96, 28, "0xBFDBFE"))
+        filters.extend(self._draw_lines(tmp_dir, f"scene_{index:03d}_title", self._wrap_lines(scene.title, 34, 2), 118, 226, 52, "white", 62))
+        cards = self._metric_cards(scene)
+        card_x = [150, 724, 1298]
+        for card_index, card in enumerate(cards):
+            filters.extend(self._draw_lines(tmp_dir, f"scene_{index:03d}_metric_{card_index}", [card], card_x[card_index], 352, 36, "white", 46))
+        body_lines = self._wrap_lines(scene.tts_text, 72, 5)
+        filters.extend(self._draw_lines(tmp_dir, f"scene_{index:03d}_body", body_lines, 142, 568, 34, "0xE5E7EB", 48))
+        footer = f"{index:02d}/{total:02d} · {scene.scene_type.upper()} · {scene.scene_id}"
+        filters.extend(self._draw_lines(tmp_dir, f"scene_{index:03d}_footer", [footer], 118, 1006, 24, "0xCBD5E1"))
+        return ",".join(filters)
+
+    def _draw_lines(
+        self,
+        tmp_dir: Path,
+        stem: str,
+        lines: list[str],
+        x: int,
+        y: int,
+        fontsize: int,
+        color: str,
+        line_height: int | None = None,
+    ) -> list[str]:
+        filters: list[str] = []
+        step = line_height or int(fontsize * 1.35)
+        for line_index, line in enumerate(lines):
+            text_file = tmp_dir / f"{stem}_{line_index:02d}.txt"
+            text_file.write_text(line, encoding="utf-8")
+            filters.append(self._drawtext(text_file, fontsize=fontsize, x=x, y=y + line_index * step, color=color))
+        return filters
+
+    def _drawtext(self, text_file: Path, fontsize: int, x: int, y: int, color: str = "white") -> str:
         font_file = self._font_file()
         options = [
             f"textfile='{self._filter_path(text_file)}'",
-            "fontcolor=white",
+            f"fontcolor={color}",
             f"fontsize={fontsize}",
             f"x={x}",
             f"y={y}",
-            f"line_spacing={line_spacing}",
         ]
         if font_file:
             options.insert(0, f"fontfile='{self._filter_path(font_file)}'")
-        if box:
-            options.extend(["box=1", "boxcolor=0x020617@0.62", "boxborderw=24"])
         return "drawtext=" + ":".join(options)
 
     def _font_file(self) -> Path | None:
@@ -289,11 +349,13 @@ class VideoContentRenderer:
     def _concat_file_path(self, path: Path) -> str:
         return str(path.resolve()).replace("\\", "/").replace("'", "'\\''")
 
-    def _wrap_text(self, text: str, width: int) -> str:
+    def _wrap_lines(self, text: str, width: int, max_lines: int) -> list[str]:
         words = " ".join(text.split()).split(" ")
         lines: list[str] = []
         current = ""
         for word in words:
+            if not word:
+                continue
             if not current:
                 current = word
             elif len(current) + len(word) + 1 <= width:
@@ -301,9 +363,108 @@ class VideoContentRenderer:
             else:
                 lines.append(current)
                 current = word
-        if current:
+                if len(lines) >= max_lines:
+                    break
+        if current and len(lines) < max_lines:
             lines.append(current)
-        return "\n".join(lines[:6])
+        if not lines:
+            lines.append(" ")
+        if len(lines) == max_lines and len(" ".join(words)) > len(" ".join(lines)):
+            lines[-1] = lines[-1].rstrip(" .,;") + "…"
+        return lines
+
+    def _metric_cards(self, scene: SceneCard) -> list[str]:
+        numbers = re.findall(r"\b\d+[\d\s]*(?:[,\.]\d+)?(?:\s*(?:%|phần trăm|tỷ|triệu|nghìn|hồ sơ|người|lượt))?", scene.tts_text)
+        cleaned = [" ".join(item.split()) for item in numbers if len(item.strip()) >= 2]
+        defaults = [scene.scene_type.upper(), "TTS-FIRST", "KHÔNG CHỒNG FRAME"]
+        cards: list[str] = []
+        for value in cleaned[:3]:
+            cards.append(value[:28])
+        while len(cards) < 3:
+            cards.append(defaults[len(cards)])
+        return cards[:3]
+
+    def _resolve_audio_path(self, audio_path: Any) -> Path | None:
+        if not isinstance(audio_path, str) or not audio_path.strip():
+            return None
+        path = Path(audio_path)
+        if not path.is_absolute():
+            path = self.job_dir / path
+        return path
+
+    def _valid_audio_path(self, audio_path: Path | None) -> Path | None:
+        if not audio_path or not audio_path.exists() or audio_path.stat().st_size <= 1024:
+            if self.require_real_audio:
+                raise RuntimeError(f"Audio file is missing or too small: {audio_path}")
+            return None
+        if self._probe_audio_duration(audio_path) <= 0:
+            if self.require_real_audio:
+                raise RuntimeError(f"Audio duration is invalid: {audio_path}")
+            return None
+        volume = self._probe_audio_volume(audio_path)
+        if volume is None or volume[0] == float("-inf"):
+            if self.require_real_audio:
+                raise RuntimeError(f"Audio is silent or volume cannot be parsed: {audio_path}")
+            return None
+        return audio_path
+
+    def _probe_audio_duration(self, audio_path: Path | None) -> float:
+        if not audio_path or not audio_path.exists() or audio_path.stat().st_size <= 1024 or not self._ffprobe_available():
+            return 0.0
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(audio_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        if result.returncode != 0:
+            return 0.0
+        try:
+            duration = float(result.stdout.strip())
+        except ValueError:
+            return 0.0
+        return duration if duration > 0 else 0.0
+
+    def _probe_audio_volume(self, audio_path: Path) -> tuple[float, float] | None:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-i",
+                str(audio_path),
+                "-af",
+                "volumedetect",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        output = f"{result.stdout}\n{result.stderr}"
+        mean_match = re.search(r"mean_volume:\s*(-?inf|-?\d+(?:\.\d+)?)\s*dB", output)
+        max_match = re.search(r"max_volume:\s*(-?inf|-?\d+(?:\.\d+)?)\s*dB", output)
+        if not mean_match or not max_match:
+            return None
+        mean_raw = mean_match.group(1)
+        max_raw = max_match.group(1)
+        mean_volume = float("-inf") if mean_raw == "-inf" else float(mean_raw)
+        max_volume = float("-inf") if max_raw == "-inf" else float(max_raw)
+        return mean_volume, max_volume
 
     def _background_color(self, index: int, scene_type: str) -> str:
         if scene_type == "intro":

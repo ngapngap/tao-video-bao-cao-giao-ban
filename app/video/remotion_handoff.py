@@ -101,6 +101,7 @@ class TTSGenerator:
         timeout: float = 120.0,
         tts_engine: str = "mock",
         default_voice: str = "vi-VN-NamMinhNeural",
+        allow_silent_fallback: bool = False,
     ):
         self.output_dir = output_dir
         self.tts_url = tts_url.rstrip("/")
@@ -110,6 +111,7 @@ class TTSGenerator:
         self.tts_engine = self._normalize_engine(tts_engine, mock_mode)
         self.default_voice = default_voice or "vi-VN-NamMinhNeural"
         self.timeout = timeout
+        self.allow_silent_fallback = allow_silent_fallback
 
     def generate_all(self, scenes: list[dict]) -> dict:
         """Tạo TTS cho tất cả scene có tts.enabled=true.
@@ -150,10 +152,9 @@ class TTSGenerator:
         audio_path = os.path.join(tts_dir, f"{scene_id}.mp3")
         duration = self._estimate_duration_seconds(text)
 
-        with open(audio_path, "wb") as file:
-            file.write(b"")
+        self._create_silent_audio(audio_path, duration)
 
-        return {"audio_path": f"tts/{scene_id}.mp3", "duration_seconds": round(duration, 1)}
+        return {"audio_path": f"tts/{scene_id}.mp3", "duration_seconds": round(duration, 1), "audio_mode": "silent_mock"}
 
     def _generate_edge(self, scene_id: str, text: str, voice: str) -> dict:
         """Tạo MP3 bằng edge-tts local-compatible async client."""
@@ -179,8 +180,14 @@ class TTSGenerator:
             finally:
                 loop.close()
 
-        duration = self.probe_audio_duration(str(audio_file)) or self._estimate_duration_seconds(text)
-        return {"audio_path": f"tts/{scene_id}.mp3", "duration_seconds": round(duration, 1)}
+        duration = self.probe_audio_duration(str(audio_file))
+        if duration <= 0:
+            if self.allow_silent_fallback:
+                duration = self._estimate_duration_seconds(text)
+                self._create_silent_audio(audio_file, duration)
+                return {"audio_path": f"tts/{scene_id}.mp3", "duration_seconds": round(duration, 1), "audio_mode": "silent_fallback"}
+            raise RuntimeError(f"edge-tts did not create valid audio for scene {scene_id}: {audio_file}")
+        return {"audio_path": f"tts/{scene_id}.mp3", "duration_seconds": round(duration, 1), "audio_mode": "edge"}
 
     def _generate_real(self, scene_id: str, text: str, voice: str) -> dict:
         """Gọi TTS API thật theo kiểu OpenAI-compatible hoặc JSON/base64 phổ biến."""
@@ -208,8 +215,14 @@ class TTSGenerator:
             else:
                 audio_file.write_bytes(response.content)
 
-        duration = self.probe_audio_duration(str(audio_file)) or self._estimate_duration_seconds(text)
-        return {"audio_path": f"tts/{scene_id}.mp3", "duration_seconds": round(duration, 1)}
+        duration = self.probe_audio_duration(str(audio_file))
+        if duration <= 0:
+            if self.allow_silent_fallback:
+                duration = self._estimate_duration_seconds(text)
+                self._create_silent_audio(audio_file, duration)
+                return {"audio_path": f"tts/{scene_id}.mp3", "duration_seconds": round(duration, 1), "audio_mode": "silent_fallback"}
+            raise RuntimeError(f"TTS API did not create valid audio for scene {scene_id}: {audio_file}")
+        return {"audio_path": f"tts/{scene_id}.mp3", "duration_seconds": round(duration, 1), "audio_mode": "api"}
 
     def _speech_endpoint(self) -> str:
         if self.tts_url.endswith("/audio/speech") or self.tts_url.endswith("/tts"):
@@ -233,8 +246,9 @@ class TTSGenerator:
 
     def probe_audio_duration(self, audio_path: str) -> float:
         """Đo duration audio bằng ffprobe nếu có; fallback trả 0 để caller ước tính."""
-        if self.mock_mode:
-            return 5.0
+        path = Path(audio_path)
+        if not path.exists() or path.stat().st_size <= 1024:
+            return 0.0
         try:
             result = subprocess.run(
                 [
@@ -288,6 +302,33 @@ class TTSGenerator:
             return "mock"
         normalized = (tts_engine or "api").strip().lower()
         return normalized if normalized in {"edge", "api", "mock"} else "api"
+
+    def _create_silent_audio(self, audio_path: str | Path, duration_seconds: float) -> None:
+        """Tạo MP3 silent hợp lệ để không bao giờ để lại audio 0KB trong manifest."""
+        path = Path(audio_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        duration = max(1.0, float(duration_seconds or 1.0))
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-t",
+            f"{duration:.3f}",
+            "-i",
+            "anullsrc=channel_layout=stereo:sample_rate=44100",
+            "-c:a",
+            "libmp3lame",
+            "-q:a",
+            "5",
+            str(path),
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=max(15, int(duration) + 10))
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(f"Không tạo được silent audio hợp lệ cho {path}: {exc}") from exc
+        if not path.exists() or path.stat().st_size <= 1024 or self.probe_audio_duration(str(path)) <= 0:
+            raise RuntimeError(f"Silent audio fallback không hợp lệ: {path}")
 
     @staticmethod
     def _estimate_duration_seconds(text: str) -> float:
