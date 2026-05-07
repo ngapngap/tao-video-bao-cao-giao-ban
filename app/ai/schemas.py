@@ -124,3 +124,15 @@ class WorkflowOutput(BaseModel):
     workflow_metadata: WorkflowMetadata
     video_settings: VideoSettings = VideoSettings()
     scenes: list[WorkflowScene] = []
+
+    @field_validator("video_settings", mode="before")
+    @classmethod
+    def normalize_video_settings(cls, v):
+        """Cho phép LLM trả resolution dạng dict {width, height} hoặc string WxH."""
+        if isinstance(v, dict):
+            resolution = v.get("resolution", "1920x1080")
+            if isinstance(resolution, dict):
+                width = resolution.get("width", 1920)
+                height = resolution.get("height", 1080)
+                v["resolution"] = f"{width}x{height}"
+        return v

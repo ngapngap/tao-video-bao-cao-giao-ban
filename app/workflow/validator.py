@@ -29,6 +29,7 @@ class WorkflowValidator:
 
     def validate(self, workflow: dict, extracted_report: dict | None = None) -> WorkflowValidationResult:
         errors: list[dict[str, Any]] = []
+        workflow = self._normalize_workflow(workflow)
 
         self._validate_workflow_metadata(workflow, errors)
 
@@ -172,6 +173,23 @@ class WorkflowValidator:
             errors=errors,
             suggested_fixes=[],
         )
+
+    def _normalize_workflow(self, workflow: dict) -> dict:
+        """Normalize workflow fields that LLM may return in compatible alternate shapes."""
+        if not isinstance(workflow, dict):
+            return workflow
+
+        video_settings = workflow.get("video_settings")
+        if not isinstance(video_settings, dict):
+            return workflow
+
+        resolution = video_settings.get("resolution")
+        if isinstance(resolution, dict):
+            width = resolution.get("width", 1920)
+            height = resolution.get("height", 1080)
+            video_settings["resolution"] = f"{width}x{height}"
+
+        return workflow
 
     def _validate_workflow_metadata(self, workflow: dict, errors: list[dict[str, Any]]) -> None:
         metadata = workflow.get("workflow_metadata")
