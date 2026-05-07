@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.ai import ExtractedReport, WorkflowOutput
-from app.ai.schemas import RawLLMExtractedReport
+from app.ai.schemas import Citation, RawLLMExtractedReport
 from app.main import App
 
 
@@ -42,6 +42,12 @@ def test_extracted_report_parses_from_dict():
     assert report.metrics[0].citations[0].page_no == 1
     assert report.sections[0].section_key == "danh_gia_chung"
     assert report.warnings == ["Thiếu số liệu chi tiết nhóm A"]
+
+
+def test_citation_accepts_string_confidence_high():
+    citation = Citation.model_validate({"page_no": 1, "source_snippet": "Nguồn", "confidence": "high"})
+
+    assert citation.confidence == 0.9
 
 
 def test_raw_llm_extracted_report_accepts_dict_warnings_and_app_normalizes_them():

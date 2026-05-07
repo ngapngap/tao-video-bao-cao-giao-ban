@@ -665,6 +665,36 @@ class App(ctk.CTk):
         normalized["metrics"] = self._dedupe_metrics(normalized["metrics"])
         return normalized
 
+    def _normalize_confidence(self, confidence: Any) -> float | None:
+        """Chuẩn hóa confidence từ string high/medium/low hoặc số sang float."""
+        if confidence is None:
+            return None
+        if isinstance(confidence, (int, float)):
+            return float(confidence)
+        if isinstance(confidence, str):
+            mapping = {"high": 0.9, "medium": 0.7, "low": 0.5, "very_high": 0.95}
+            normalized = confidence.lower()
+            if normalized in mapping:
+                return mapping[normalized]
+            try:
+                return float(confidence)
+            except ValueError:
+                return None
+        return None
+
+    def _normalize_citations(self, citations: Any) -> list[dict[str, Any]]:
+        """Chuẩn hóa confidence trong danh sách citations trước khi validate schema."""
+        if not isinstance(citations, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for citation in citations:
+            if not isinstance(citation, dict):
+                continue
+            item = dict(citation)
+            item["confidence"] = self._normalize_confidence(item.get("confidence"))
+            normalized.append(item)
+        return normalized
+
     def _normalize_warnings(self, warnings: Any) -> list[str]:
         """Chuyển warnings từ dict/list hỗn hợp sang list string."""
         if warnings is None:
@@ -701,7 +731,7 @@ class App(ctk.CTk):
                             "unit": str(value.get("unit") or ""),
                             "comparison_type": str(value.get("comparison_type") or "none"),
                             "comparison_value": value.get("comparison_value"),
-                            "citations": value.get("citations") or [],
+                            "citations": self._normalize_citations(value.get("citations")),
                         }
                     )
                 else:
@@ -717,7 +747,7 @@ class App(ctk.CTk):
                                 "unit": str(item.get("unit") or ""),
                                 "comparison_type": str(item.get("comparison_type") or "none"),
                                 "comparison_value": item.get("comparison_value"),
-                                "citations": item.get("citations") or [],
+                                "citations": self._normalize_citations(item.get("citations")),
                             }
                         )
 
@@ -742,13 +772,13 @@ class App(ctk.CTk):
                         {
                             "section_key": str(section.get("section_key") or section.get("key") or f"section_{index + 1}"),
                             "summary": str(section.get("summary") or section.get("title") or section.get("name") or ""),
-                            "citations": section.get("citations") or [],
+                            "citations": self._normalize_citations(section.get("citations")),
                         }
                     )
         for key, value in raw_data.items():
             if key.startswith("section_") and isinstance(value, dict):
                 summary = value.get("summary") or value.get("title") or value.get("name") or key.replace("_", " ").title()
-                sections.append({"section_key": key, "summary": str(summary), "citations": value.get("citations") or []})
+                sections.append({"section_key": key, "summary": str(summary), "citations": self._normalize_citations(value.get("citations"))})
         return sections
 
     def _chunk_pdf_text(self, raw_text: str, max_chars: int = 1500) -> list[str]:

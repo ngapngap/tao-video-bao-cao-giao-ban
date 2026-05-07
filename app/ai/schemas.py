@@ -4,13 +4,31 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class Citation(BaseModel):
     page_no: Optional[int] = None
-    source_snippet: str
-    confidence: float
+    source_snippet: str = ""
+    confidence: Optional[float] = None
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def parse_confidence(cls, v):
+        """Chấp nhận string 'high'/'medium'/'low' hoặc float."""
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        if isinstance(v, str):
+            mapping = {"high": 0.9, "medium": 0.7, "low": 0.5, "very_high": 0.95}
+            if v.lower() in mapping:
+                return mapping[v.lower()]
+            try:
+                return float(v)
+            except ValueError:
+                return None
+        return None
 
 
 class Metric(BaseModel):
