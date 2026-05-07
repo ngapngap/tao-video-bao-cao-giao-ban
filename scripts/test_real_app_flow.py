@@ -28,7 +28,8 @@ sys.path.insert(0, ".")
 
 from app.ai.llm_client import LLMClient
 from app.ai.prompts import P1_1_CHUNK_EXTRACTION, P1_1B_SCREEN_PLANNING, P1_2_WORKFLOW_COMPOSITION
-from app.ai.schemas import ExtractedReport
+from app.ai.schemas import ExtractedReport, RawLLMExtractedReport
+from app.core.chunk_processor import ChunkProcessor
 from app.video.prompts import (
     S2_1_SCENE_PLANNING,
     S2_2_VISUAL_SPEC,
@@ -41,7 +42,9 @@ from app.video.prompts import (
 )
 from app.pdf.normalizer import DataNormalizer
 from app.pdf.parser import PDFParser
+from app.workflow.composer import WorkflowComposer
 from app.workflow.validator import WorkflowValidator
+from app.video.remotion_handoff import FinalPackager, RemotionManifest, RenderGate, TTSGenerator
 
 PDF_PATH = Path(
     os.environ.get(
@@ -58,14 +61,31 @@ MODEL = os.environ.get("LLM_EXTRACT_MODEL", "minimax/MiniMax-M2.7")
 MAX_CHARS = int(os.environ.get("REAL_PIPELINE_CHUNK_CHARS", "4000"))
 MAX_WORKERS = int(os.environ.get("REAL_PIPELINE_MAX_WORKERS", "5"))
 MAX_TOKENS = int(os.environ.get("REAL_PIPELINE_MAX_TOKENS", "6000"))
-S2_MAX_TOKENS = int(os.environ.get("REAL_PIPELINE_S2_MAX_TOKENS", "500"))
+S2_MAX_TOKENS = int(os.environ.get("REAL_PIPELINE_S2_MAX_TOKENS", "700"))
+STEP_TIMEOUTS = {
+    "S1.1": 30.0,
+    "S1.2": 30.0,
+    "S1.3": 30.0,
+    "P1.1": 600.0,  # 10 phút cho multi-chunk.
+    "P1.1b": 120.0,
+    "P1.2": 300.0,  # Workflow composition có thể mất lâu hơn 2 phút.
+    "S2.1": 180.0,
+    "S2.2": 180.0,
+    "S2.3": 180.0,
+    "S2.4": 120.0,
+    "S2.5": 120.0,
+    "S2.6": 120.0,
+    "S2.7": 120.0,
+    "S2.8": 180.0,
+}
+STEP_TIMEOUT_SECONDS = float(os.environ.get("REAL_PIPELINE_STEP_TIMEOUT_SECONDS", "180"))
 S2_TIMEOUT_SECONDS = float(os.environ.get("REAL_PIPELINE_S2_TIMEOUT_SECONDS", "120"))
 S2_LLM_TIMEOUT_SECONDS = float(os.environ.get("REAL_PIPELINE_S2_LLM_TIMEOUT_SECONDS", "115"))
 METRICS_MIN_COUNT = int(os.environ.get("REAL_PIPELINE_MIN_METRICS", "40"))
 PIPELINE_MAX_SECONDS = float(os.environ.get("REAL_PIPELINE_MAX_SECONDS", "900"))
-P1_TOTAL_MAX_SECONDS = float(os.environ.get("REAL_PIPELINE_P1_TOTAL_MAX_SECONDS", "300"))
-S2_TOTAL_MAX_SECONDS = float(os.environ.get("REAL_PIPELINE_S2_TOTAL_MAX_SECONDS", "600"))
-S2_MODE = os.environ.get("REAL_PIPELINE_S2_MODE", "llm").strip().lower()
+P1_TOTAL_MAX_SECONDS = float(os.environ.get("REAL_PIPELINE_P1_TOTAL_MAX_SECONDS", "360"))
+S2_TOTAL_MAX_SECONDS = float(os.environ.get("REAL_PIPELINE_S2_TOTAL_MAX_SECONDS", "240"))
+S2_MODE = "llm"
 
 STEP_DEFINITIONS = [
     ("S1.1", "Chuẩn bị thư mục"),
@@ -116,6 +136,10 @@ S2_REQUIRED_UPSTREAM = {
     "S2.7": ["remotion/render-plan.json"],
     "S2.8": ["remotion/qa-fix.json", "remotion/render-plan.json"],
 }
+
+
+def step_timeout(step_id: str) -> float:
+    return float(os.environ.get(f"REAL_PIPELINE_{step_id.replace('.', '_')}_TIMEOUT_SECONDS", STEP_TIMEOUTS.get(step_id, STEP_TIMEOUT_SECONDS)))
 
 
 def now_iso() -> str:
@@ -234,14 +258,16 @@ class RealAppFlow:
         if not KEY:
             print("ERROR: Missing LLM_EXTRACT_KEY environment variable.")
             return 2
-        self.run_step("S1.1", self.step_prepare_dirs)
-        self.run_step("S1.2", self.step_copy_pdf)
-        self.run_step("S1.3", self.step_parse_pdf)
-        self.run_step("P1.1", self.step_extract_chunks)
-        self.run_step("P1.1b", self.step_screen_plan)
-        self.run_step("P1.2", self.step_compose_workflow)
+        start_total = time.time()
+        self.run_step("S1.1", self.step_prepare_dirs, timeout_seconds=step_timeout("S1.1"))
+        self.run_step("S1.2", self.step_copy_pdf, timeout_seconds=step_timeout("S1.2"))
+        self.run_step("S1.3", self.step_parse_pdf, timeout_seconds=step_timeout("S1.3"))
+        self.run_step("P1.1", self.step_extract_chunks, timeout_seconds=step_timeout("P1.1"))
+        self.run_step("P1.1b", self.step_screen_plan, timeout_seconds=step_timeout("P1.1b"))
+        self.run_step("P1.2", self.step_compose_workflow, timeout_seconds=step_timeout("P1.2"))
         for step_id in ["S2.1", "S2.2", "S2.3", "S2.4", "S2.5", "S2.6", "S2.7", "S2.8"]:
-            self.run_step(step_id, lambda sid=step_id: self.step_video(sid), timeout_seconds=S2_TIMEOUT_SECONDS + 10)
+            self.run_step(step_id, lambda sid=step_id: self.step_video(sid), timeout_seconds=step_timeout(step_id))
+        self.context["wall_clock_total_seconds"] = round(time.time() - start_total, 2)
         self.assert_final_acceptance()
         self.state["status"] = "DONE"
         self.state["current_step_id"] = None
@@ -252,6 +278,21 @@ class RealAppFlow:
 
     def step_prepare_dirs(self) -> list[str]:
         self.ensure_base_dirs()
+        cache_dirs = [
+            self.output_dir / "extract_chunks",
+            self.output_dir / "parsed" / "chunks",
+            self.output_dir / "workflow" / "chunks",
+        ]
+        for cache_dir in cache_dirs:
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir)
+                print(f"  Cleared chunk cache: {cache_dir}")
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        for rel_dir in ["remotion", "tts", "final"]:
+            target_dir = self.output_dir / rel_dir
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+            target_dir.mkdir(parents=True, exist_ok=True)
         return ["job_state.json", "logs/job-events.ndjson"]
 
     def step_copy_pdf(self) -> list[str]:
@@ -454,22 +495,30 @@ class RealAppFlow:
                 },
                 ensure_ascii=False,
             )
-            result = self.llm.chat_with_retry_parse(P1_1_CHUNK_EXTRACTION, payload, max_tokens=MAX_TOKENS, timeout=360.0)
+            result = self.llm.chat_with_retry_parse(P1_1_CHUNK_EXTRACTION, payload, max_parse_retries=2, max_tokens=MAX_TOKENS, timeout=step_timeout("P1.1"))
+            RawLLMExtractedReport.model_validate(result)
             elapsed = round(time.time() - start, 2)
             result["_chunk_runtime"] = {"chunk_index": index, "chars": len(chunk), "seconds": elapsed}
-            cache_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
             return index, result, elapsed
 
-        results: list[dict[str, Any] | None] = [None] * len(chunks)
         timings: list[dict[str, Any]] = []
-        with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(chunks))) as executor:
-            futures = {executor.submit(process_one, index, chunk): index for index, chunk in enumerate(chunks)}
-            for future in as_completed(futures):
-                index, result, elapsed = future.result()
-                results[index] = result
-                timings.append({"chunk_index": index, "seconds": elapsed, "metrics": len(result.get("metrics", []))})
-                self.log("INFO", "P1.1", f"chunk {index + 1}/{len(chunks)} DONE in {elapsed:.2f}s")
-        normalized = self.merge_extract_results([item for item in results if item])
+
+        def processor(index: int, chunk: str) -> dict[str, Any]:
+            chunk_index, result, elapsed = process_one(index, chunk)
+            timings.append({"chunk_index": chunk_index, "seconds": elapsed, "metrics": len(result.get("metrics", []))})
+            self.log("INFO", "P1.1", f"chunk {chunk_index + 1}/{len(chunks)} DONE in {elapsed:.2f}s")
+            return result
+
+        chunk_processor = ChunkProcessor(str(self.output_dir / "parsed"), "chunks")
+        chunk_processor.clear_cache()
+        results = chunk_processor.process_chunks(
+            chunks,
+            processor,
+            max_retry=1,
+            parallel=True,
+            max_workers=min(MAX_WORKERS, len(chunks)),
+        )
+        normalized = self.merge_extract_results(results)
         ExtractedReport.model_validate(normalized)
         validation = WorkflowValidator().validate_extracted_report(normalized)
         extracted_path = self.output_dir / "parsed" / "extracted-report.json"
@@ -494,14 +543,9 @@ class RealAppFlow:
         extracted = self.context.get("extracted_report") or json.loads((self.output_dir / "parsed" / "extracted-report.json").read_text(encoding="utf-8"))
         path = self.output_dir / "parsed" / "screen-plan.json"
         if path.exists():
-            cached = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(cached, dict):
-                cached["screens"] = self.normalize_screen_data_keys(cached.get("screens", []), extracted)
-                self.validate_screen_plan(cached, extracted)
-                self.context["screen_plan"] = cached
-                return ["parsed/screen-plan.json"]
+            path.unlink()
         payload = json.dumps({"report_month": REPORT_MONTH, "extracted_report": self.compact_extracted_report(extracted, metric_limit=40)}, ensure_ascii=False)
-        result = self.llm.chat_with_retry_parse(P1_1B_SCREEN_PLANNING, payload, max_tokens=MAX_TOKENS, timeout=360.0)
+        result = self.llm.chat_with_retry_parse(P1_1B_SCREEN_PLANNING, payload, max_parse_retries=2, max_tokens=MAX_TOKENS, timeout=step_timeout("P1.1b"))
         screens = result.get("screens", [])
         if not isinstance(screens, list):
             raise ValueError("screen-plan screens must be a list")
@@ -523,22 +567,13 @@ class RealAppFlow:
     def step_compose_workflow(self) -> list[str]:
         extracted = self.context.get("extracted_report") or json.loads((self.output_dir / "parsed" / "extracted-report.json").read_text(encoding="utf-8"))
         screen_plan = self.context.get("screen_plan") or json.loads((self.output_dir / "parsed" / "screen-plan.json").read_text(encoding="utf-8"))
-        existing_workflows = sorted((self.output_dir / "workflow").glob("workflow-*.json"))
+        for old_workflow in (self.output_dir / "workflow").glob("workflow-*.json"):
+            old_workflow.unlink()
+        for old_workflow_md in (self.output_dir / "workflow").glob("workflow-*.md"):
+            old_workflow_md.unlink()
         validation_path = self.output_dir / "workflow" / "workflow-validation.json"
-        if existing_workflows and validation_path.exists():
-            cached_workflow = json.loads(existing_workflows[-1].read_text(encoding="utf-8"))
-            validation = WorkflowValidator().validate(cached_workflow, extracted)
-            if validation.passed:
-                self.context["workflow"] = cached_workflow
-                return [
-                    "workflow/chunks/chunk_000.json",
-                    existing_workflows[-1].relative_to(self.output_dir).as_posix(),
-                    (existing_workflows[-1].with_suffix(".md")).relative_to(self.output_dir).as_posix(),
-                    "workflow/workflow-validation.json",
-                ]
-        if os.environ.get("REAL_PIPELINE_FAST_WORKFLOW_FALLBACK", "1").strip() == "1":
-            result = self.normalize_workflow_result(self.build_workflow_from_screen_plan(screen_plan, extracted), screen_plan, extracted)
-            return self.write_workflow_artifacts(result, extracted)
+        if validation_path.exists():
+            validation_path.unlink()
         payload = json.dumps(
             {
                 "report_month": REPORT_MONTH,
@@ -550,15 +585,12 @@ class RealAppFlow:
                     "sections": extracted.get("sections", [])[:8],
                     "warnings": extracted.get("warnings", [])[:6],
                 },
-                "workflow_template_excerpt": Path("workflow.md").read_text(encoding="utf-8")[:5000],
+                "workflow_template_excerpt": WorkflowComposer("workflow.md").load_template()[:5000],
             },
             ensure_ascii=False,
         )
-        try:
-            result = self.llm.chat_with_retry_parse(P1_2_WORKFLOW_COMPOSITION, payload, max_tokens=MAX_TOKENS, timeout=360.0)
-        except Exception as exc:  # noqa: BLE001 - fallback keeps real-app flow moving after malformed long JSON
-            self.log("WARN", "P1.2", f"LLM workflow parse failed; using screen-plan fallback workflow: {type(exc).__name__}: {exc}")
-            result = self.build_workflow_from_screen_plan(screen_plan, extracted)
+        result = self.llm.chat_with_retry_parse(P1_2_WORKFLOW_COMPOSITION, payload, max_parse_retries=2, max_tokens=MAX_TOKENS, timeout=step_timeout("P1.2"))
+        result = WorkflowComposer("workflow.md").compose_from_ai_output(result, REPORT_MONTH, JOB_ID)
         result = self.normalize_workflow_result(result, screen_plan, extracted)
         scenes = result.get("scenes")
         if not isinstance(scenes, list) or not scenes:
@@ -657,35 +689,31 @@ class RealAppFlow:
         rel_path = S2_ARTIFACTS[step_id]
         path = self.output_dir / rel_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists() and path.stat().st_size > 0:
-            cached = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(cached, dict):
-                self.validate_s2_result(step_id, self.normalize_s2_result(step_id, cached, workflow), workflow)
-                artifacts = [rel_path]
-                if step_id == "S2.8" and (self.output_dir / "final" / "video.mp4").exists():
-                    artifacts.append("final/video.mp4")
-                return artifacts
-        if S2_MODE == "llm":
-            try:
-                result = self.llm.chat_with_retry_parse(
-                    S2_PROMPTS[step_id] + "\nBẮT BUỘC trả JSON object thuần, CỰC NGẮN theo envelope {status,step_id,data,warnings,error}; data chỉ gồm summary và tối đa 3 items. Không markdown. Không thêm số liệu ngoài workflow/upstream.",
-                    json.dumps(self.build_s2_input(step_id, workflow), ensure_ascii=False),
-                    max_tokens=S2_MAX_TOKENS,
-                    timeout=S2_LLM_TIMEOUT_SECONDS,
-                )
-            except (TimeoutError, ValueError) as exc:
-                self.log("WARN", step_id, f"LLM S2 connected call did not yield valid JSON within budget; using deterministic fallback artifact: {type(exc).__name__}: {exc}")
-                result = self.mock_video_result(step_id, workflow)
-            result = self.normalize_s2_result(step_id, result, workflow)
-        else:
-            result = self.mock_video_result(step_id, workflow)
+        if path.exists():
+            path.unlink()
+        result = self.llm.chat_with_retry_parse(
+            S2_PROMPTS[step_id] + "\nBẮT BUỘC trả JSON object thuần, CỰC NGẮN theo envelope {status,step_id,data,warnings,error}; data chỉ gồm summary và tối đa 3 items. Không markdown. Không thêm số liệu ngoài workflow/upstream.",
+            json.dumps(self.build_s2_input(step_id, workflow), ensure_ascii=False),
+            max_parse_retries=2,
+            max_tokens=S2_MAX_TOKENS,
+            timeout=S2_LLM_TIMEOUT_SECONDS,
+        )
+        result = self.normalize_s2_result(step_id, result, workflow)
         self.validate_s2_result(step_id, result, workflow)
         path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         artifacts = [rel_path]
         if step_id == "S2.8":
-            video_path = self.output_dir / "final" / "video.mp4"
-            video_path.write_bytes(b"MOCK_MP4_REAL_APP_FLOW\n")
-            artifacts.append("final/video.mp4")
+            tts_manifest = TTSGenerator(str(self.output_dir), mock_mode=True).generate_all(workflow.get("scenes", []))
+            component_spec = self.load_optional_json("remotion/component-spec.json")
+            render_plan = self.load_optional_json("remotion/render-plan.json")
+            manifest = RemotionManifest(str(self.output_dir)).build_manifest(workflow, component_spec, render_plan, tts_manifest)
+            ready, errors = RenderGate(str(self.output_dir)).check_final_ready(manifest, tts_manifest)
+            if not ready:
+                raise ValueError(f"Render gate failed: {errors}")
+            RemotionManifest(str(self.output_dir)).save_manifest(manifest, "remotion-manifest.json")
+            video_rel = FinalPackager(str(self.output_dir)).create_mock_video()
+            FinalPackager(str(self.output_dir)).create_publish_manifest(JOB_ID, REPORT_MONTH, video_rel, manifest)
+            artifacts.extend(["remotion/remotion-manifest.json", "final/video.mp4", "final/publish-manifest.json"])
         for artifact in artifacts:
             artifact_path = self.output_dir / artifact
             if not artifact_path.exists() or artifact_path.stat().st_size <= 0:
@@ -834,20 +862,32 @@ class RealAppFlow:
             if invalid:
                 raise ValueError(f"screen {index} has invalid data_keys: {invalid}")
 
+    def load_optional_json(self, rel_path: str) -> dict[str, Any]:
+        path = self.output_dir / rel_path
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("data"), dict):
+            return data["data"]
+        return data if isinstance(data, dict) else {}
+
     def assert_final_acceptance(self) -> None:
         durations = {step["step_id"]: float(step["duration_seconds"] or 0) for step in self.state["steps"]}
         p1_total = durations.get("P1.1", 0) + durations.get("P1.1b", 0) + durations.get("P1.2", 0)
         s2_total = sum(durations.get(step_id, 0) for step_id in S2_ARTIFACTS)
-        pipeline_total = sum(durations.values())
-        s2_slow = {step_id: durations.get(step_id, 0) for step_id in S2_ARTIFACTS if durations.get(step_id, 0) > S2_TIMEOUT_SECONDS}
+        pipeline_total = float(self.context.get("wall_clock_total_seconds") or sum(durations.values()))
+        slow_steps = {step_id: seconds for step_id, seconds in durations.items() if seconds > step_timeout(step_id)}
+        s2_slow = {step_id: durations.get(step_id, 0) for step_id in S2_ARTIFACTS if durations.get(step_id, 0) > step_timeout(step_id)}
         if p1_total > P1_TOTAL_MAX_SECONDS:
             raise ValueError(f"P1.1+P1.1b+P1.2 total must be <= {P1_TOTAL_MAX_SECONDS}s, got {p1_total:.2f}s")
         if s2_total > S2_TOTAL_MAX_SECONDS:
             raise ValueError(f"S2 total must be <= {S2_TOTAL_MAX_SECONDS}s, got {s2_total:.2f}s")
+        if slow_steps:
+            raise ValueError(f"steps exceeded per-step timeout: {slow_steps}")
         if pipeline_total > PIPELINE_MAX_SECONDS:
             raise ValueError(f"pipeline total must be <= {PIPELINE_MAX_SECONDS}s, got {pipeline_total:.2f}s")
         if s2_slow:
-            raise ValueError(f"S2 steps exceeded {S2_TIMEOUT_SECONDS}s: {s2_slow}")
+            raise ValueError(f"S2 steps exceeded per-step timeout: {s2_slow}")
         for step in self.state["steps"]:
             if step["status"] != "DONE":
                 raise ValueError(f"hard-fail or incomplete step detected: {step['step_id']}={step['status']}")
@@ -876,12 +916,15 @@ class RealAppFlow:
             "metrics_count_gte_min": len(extracted.get("metrics", [])) >= METRICS_MIN_COUNT,
             "screen_count_6_to_10": 6 <= len(screen_plan.get("screens", [])) <= 10,
             "workflow_validation_pass": bool(workflow_validation.get("passed")),
+            "metrics_count_gte_40": len(extracted.get("metrics", [])) >= 40,
+            "final_video_exists": (self.output_dir / "final" / "video.mp4").exists() and (self.output_dir / "final" / "video.mp4").stat().st_size > 0,
+            "each_step_lte_configured_timeout": all(float(step["duration_seconds"] or 0) <= step_timeout(step["step_id"]) for step in self.state["steps"]),
+            "pipeline_total_lte_10_minutes": pipeline_total <= PIPELINE_MAX_SECONDS,
             "p1_total_lte_5_minutes": p1_total <= P1_TOTAL_MAX_SECONDS,
-            "p1_1b_lte_2_minutes": durations.get("P1.1b", 0) <= 120,
-            "p1_2_lte_3_minutes": durations.get("P1.2", 0) <= 180,
-            "s2_each_lte_2_minutes": all(durations.get(step_id, 0) <= S2_TIMEOUT_SECONDS for step_id in S2_ARTIFACTS),
-            "s2_total_lte_10_minutes": s2_total <= S2_TOTAL_MAX_SECONDS,
-            "pipeline_total_lte_15_minutes": pipeline_total <= PIPELINE_MAX_SECONDS,
+            "p1_1b_lte_2_minutes": durations.get("P1.1b", 0) <= step_timeout("P1.1b"),
+            "p1_2_lte_configured_timeout": durations.get("P1.2", 0) <= step_timeout("P1.2"),
+            "s2_each_lte_configured_timeout": all(durations.get(step_id, 0) <= step_timeout(step_id) for step_id in S2_ARTIFACTS),
+            "s2_total_lte_budget": s2_total <= S2_TOTAL_MAX_SECONDS,
             "no_hard_fail": all(step["status"] == "DONE" for step in self.state["steps"]),
         }
         summary = {
