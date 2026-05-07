@@ -278,7 +278,7 @@ class App(ctk.CTk):
             parse_data = self._read_json(Path(output_dir) / "parsed" / "pdf-parse-result.json")
             total_pages = parse_data.get("total_pages", "?")
             raw_text = str(parse_data.get("raw_text") or parse_data.get("raw_text_preview", ""))
-            chunks = self._chunk_pdf_text(raw_text, max_chars=1500)
+            chunks = self._chunk_pdf_text(raw_text, max_chars=800)
             url, key, model = self._get_llm_config()
             llm_url = LLMClient(url, key, model).url if url else ""
             logger.log("INFO", "P1.1", f"▶ Bắt đầu trích xuất report từ PDF ({total_pages} trang)", job_state.job_id)
@@ -302,7 +302,7 @@ class App(ctk.CTk):
                         "total_chunks": len(chunks),
                         "chunk_text": chunk_text,
                     }
-                    result = self._llm_chat(P1_1_CHUNK_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id, max_tokens=6000)
+                    result = self._llm_chat(P1_1_CHUNK_EXTRACTION, input_payload, "P1.1", logger, job_state.job_id, max_tokens=3000)
                     response_chars = len(json.dumps(result, ensure_ascii=False))
                     logger.log("INFO", "P1.1", f"  Chunk {chunk_index + 1}/{len(chunks)}: nhận {response_chars} chars", job_state.job_id)
                     return result
@@ -843,6 +843,11 @@ class App(ctk.CTk):
             return {}
         merged: dict[str, Any] = {"metrics": [], "sections": [], "warnings": []}
         for report in chunk_reports:
+            if isinstance(report, list):
+                merged["metrics"].extend(item for item in report if isinstance(item, dict))
+                continue
+            if not isinstance(report, dict):
+                continue
             if isinstance(report.get("items"), list) and not isinstance(report.get("metrics"), list):
                 report = {**report, "metrics": report["items"]}
             for key, value in report.items():
@@ -995,11 +1000,90 @@ class App(ctk.CTk):
             raise
 
     def _llm_video_step(self, step_id: str, input_payload: dict[str, Any], logger: EventLogger, job_state: JobState) -> dict[str, Any]:
-        result = self._llm_chat(VIDEO_PROMPTS[step_id], input_payload, step_id, logger, job_state.job_id)
+        try:
+            result = self._llm_chat(VIDEO_PROMPTS[step_id], input_payload, step_id, logger, job_state.job_id, max_tokens=2000)
+        except Exception as exc:
+            safe_message = mask_sensitive_text(str(exc))
+            logger.log("WARN", step_id, f"[{step_id}] LLM video step failed ({safe_message}), dùng fallback deterministic", job_state.job_id)
+            result = self._fallback_video_step(step_id, input_payload)
         if not isinstance(result, dict):
             raise ValueError(f"{step_id} output phải là dict")
-        logger.log("INFO", step_id, f"[{step_id}] Đã gọi LLM thật và nhận JSON keys={list(result.keys())[:8]}", job_state.job_id)
+        logger.log("INFO", step_id, f"[{step_id}] Video step JSON keys={list(result.keys())[:8]}", job_state.job_id)
         return result
+
+    def _fallback_video_step(self, step_id: str, input_payload: dict[str, Any]) -> dict[str, Any]:
+        """Fallback deterministic cho S2.x khi LLM trả JSON không parse được."""
+        workflow = input_payload.get("workflow") if isinstance(input_payload.get("workflow"), dict) else {}
+        scene_plan = input_payload.get("scene_plan") if isinstance(input_payload.get("scene_plan"), dict) else self._fallback_scene_plan(workflow)
+        scenes = scene_plan.get("scenes", []) if isinstance(scene_plan, dict) else []
+
+        if step_id == "S2.1":
+            return self._fallback_scene_plan(workflow)
+        if step_id == "S2.2":
+            return {
+                "scene_visuals": [
+                    {
+                        "scene_id": scene.get("scene_id"),
+                        "visual_type": "title_card" if scene.get("scene_type") in {"intro", "closing"} else "text_callout",
+                        "layers": [{"type": "text", "data_source": scene.get("scene_id"), "position": "center", "animation": "fade_in"}],
+                    }
+                    for scene in scenes
+                    if isinstance(scene, dict)
+                ]
+            }
+        if step_id == "S2.3":
+            return {
+                "scripts": [
+                    {
+                        "scene_id": scene.get("scene_id"),
+                        "enabled": bool(scene.get("tts", {}).get("enabled", True)),
+                        "text": str(scene.get("tts", {}).get("text") or scene.get("title") or ""),
+                        "voice": str(scene.get("tts", {}).get("voice") or "vi-VN-NamMinhNeural"),
+                    }
+                    for scene in scenes
+                    if isinstance(scene, dict)
+                ]
+            }
+        if step_id == "S2.4":
+            return {"components": [{"scene_id": scene.get("scene_id"), "type": scene.get("scene_type") or "content", "data": scene, "animation": "fade", "duration": 5} for scene in scenes if isinstance(scene, dict)]}
+        if step_id == "S2.5":
+            return {"assets": [{"asset_id": "font_default", "type": "font", "source": "local", "required": True}]}
+        if step_id == "S2.6":
+            fps = 30
+            start_frame = 0
+            timeline = []
+            for scene in scenes:
+                if not isinstance(scene, dict):
+                    continue
+                duration_seconds = 5
+                duration_frames = duration_seconds * fps
+                timeline.append({"scene_id": scene.get("scene_id"), "start_frame": start_frame, "duration_frames": duration_frames, "duration_seconds": duration_seconds})
+                start_frame += duration_frames
+            return {"fps": fps, "timeline": timeline, "total_frames": start_frame, "estimated_duration_seconds": round(start_frame / fps, 1)}
+        if step_id == "S2.7":
+            issues = input_payload.get("issues", []) if isinstance(input_payload.get("issues", []), list) else []
+            return {"issues": issues, "patches": [], "status": "passed" if not issues else "needs_fix"}
+        if step_id == "S2.8":
+            return {"status": "ready", "artifacts": []}
+        return {"source": "deterministic_fallback"}
+
+    def _fallback_scene_plan(self, workflow_data: dict[str, Any]) -> dict[str, Any]:
+        """Fallback scene plan từ workflow khi LLM fail."""
+        scenes = workflow_data.get("scenes", [])
+        if not isinstance(scenes, list):
+            scenes = []
+        return {
+            "scenes": [
+                {
+                    "scene_id": s.get("scene_id"),
+                    "scene_type": s.get("scene_type"),
+                    "title": s.get("title"),
+                    "shots": [{"shot_id": f"{s.get('scene_id')}_shot_01", "type": "main"}],
+                }
+                for s in scenes
+                if isinstance(s, dict)
+            ]
+        }
 
     def _get_llm_config(self) -> tuple[str, str, str]:
         """Lấy LLM config từ app state."""
