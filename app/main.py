@@ -387,7 +387,7 @@ class App(ctk.CTk):
                         "screen_plan": screen_plan,
                         "workflow_template_md": template_content,
                     }
-                    return self._llm_chat(P1_2_WORKFLOW_COMPOSITION, input_payload, "P1.2", logger, job_state.job_id, max_tokens=4000)
+                    return self._llm_chat(P1_2_WORKFLOW_COMPOSITION, input_payload, "P1.2", logger, job_state.job_id, max_tokens=8000)
 
                 workflow_parts = processor.process_chunks(
                     workflow_chunks,

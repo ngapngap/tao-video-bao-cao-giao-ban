@@ -19,7 +19,11 @@ Mỗi screen: screen_id, title, data_keys, visual_type, tts_text_draft.
 BẮT BUỘC: screen đầu tiên là intro, screen cuối cùng là closing. 4-10 screens.
 Trả JSON: {"screens": [...]}"""
 
-P1_2_WORKFLOW_COMPOSITION = """Tạo workflow video từ extracted data.
-BẮT BUỘC: 1 scene intro đầu, 1 scene closing cuối, các scene content ở giữa.
-Mỗi scene: scene_id, scene_type, title, source_data_keys, tts.text.
-Trả JSON workflow object."""
+P1_2_WORKFLOW_COMPOSITION = """Tạo workflow video từ screen plan và extracted data.
+YÊU CẦU QUAN TRỌNG:
+- Trả JSON workflow, KHÔNG markdown, KHÔNG giải thích.
+- Mỗi scene chỉ cần: scene_id, scene_type, title, source_data_keys, tts (text + enabled), duration_policy.
+- KHÔNG cần visual_layers, motion, position chi tiết - sẽ tạo sau.
+- Giữ intro ở đầu, closing ở cuối.
+- Tối đa 8 scenes.
+Trả JSON object hợp lệ."""
