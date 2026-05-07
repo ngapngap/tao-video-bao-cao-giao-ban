@@ -7,6 +7,7 @@ from collections.abc import Callable
 import customtkinter as ctk
 
 from app.ui import tokens
+from app.version import __version__
 
 
 class SidebarFrame(ctk.CTkFrame):
@@ -47,10 +48,12 @@ class SidebarFrame(ctk.CTkFrame):
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(4, weight=1)
 
         self._build_brand()
         self._build_nav_buttons()
         self._build_config_status(config_status)
+        self._build_version_label()
         self.set_active(active_screen)
 
     def _build_brand(self) -> None:
@@ -131,6 +134,22 @@ class SidebarFrame(ctk.CTkFrame):
             sticky="ew",
             padx=tokens.SPACING_MD,
             pady=(0, tokens.SPACING_MD),
+        )
+
+    def _build_version_label(self) -> None:
+        version_label = ctk.CTkLabel(
+            self,
+            text=f"Phiên bản {__version__}",
+            font=tokens.FONT_SMALL,
+            text_color="#BFDBFE",
+            anchor="w",
+        )
+        version_label.grid(
+            row=5,
+            column=0,
+            sticky="sew",
+            padx=tokens.SPACING_XL,
+            pady=(0, tokens.SPACING_LG),
         )
 
     def _handle_nav_click(self, screen_name: str) -> None:
