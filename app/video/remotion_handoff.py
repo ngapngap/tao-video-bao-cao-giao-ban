@@ -154,7 +154,10 @@ class TTSGenerator:
 
     def _generate_edge(self, scene_id: str, text: str, voice: str) -> dict:
         """Tạo MP3 bằng edge-tts local-compatible async client."""
-        edge_tts = importlib.import_module("edge_tts")
+        try:
+            edge_tts = importlib.import_module("edge_tts")
+        except ImportError as exc:
+            raise ImportError("edge-tts không khả dụng trong runtime hiện tại. Cài dependency bằng: python -m pip install edge-tts") from exc
         tts_dir = Path(self.output_dir) / "tts"
         tts_dir.mkdir(parents=True, exist_ok=True)
         audio_file = tts_dir / f"{scene_id}.mp3"
@@ -261,7 +264,7 @@ class TTSGenerator:
                 importlib.import_module("edge_tts")
                 return True, f"edge-tts local OK! Voice: {self.default_voice}"
             except ImportError as exc:
-                return False, f"edge-tts chưa khả dụng: {exc}"
+                return False, f"edge-tts chưa khả dụng trong runtime hiện tại. Cài dependency bằng: python -m pip install edge-tts. Chi tiết: {exc}"
         try:
             result = self._generate_real("healthcheck", "Kiểm tra kết nối TTS.", self.default_voice)
             path = Path(self.output_dir) / str(result["audio_path"])

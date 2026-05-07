@@ -2,16 +2,18 @@
 from PyInstaller.utils.hooks import collect_all
 
 edge_tts_datas, edge_tts_binaries, edge_tts_hiddenimports = collect_all('edge_tts')
+aiohttp_datas, aiohttp_binaries, aiohttp_hiddenimports = collect_all('aiohttp')
+tabulate_datas, tabulate_binaries, tabulate_hiddenimports = collect_all('tabulate')
 
 
 a = Analysis(
     ['app/main.py'],
     pathex=[],
-    binaries=edge_tts_binaries,
+    binaries=edge_tts_binaries + aiohttp_binaries + tabulate_binaries,
     datas=[
         ('workflow.md', '.'),
         ('app/assets', 'app/assets'),
-    ] + edge_tts_datas,
+    ] + edge_tts_datas + aiohttp_datas + tabulate_datas,
     hiddenimports=[
         'customtkinter',
         'pymupdf',
@@ -25,6 +27,7 @@ a = Analysis(
         'aiohttp.client',
         'aiohttp.connector',
         'aiohttp.web',
+        'tabulate',
         'aiosignal',
         'frozenlist',
         'multidict',
@@ -32,7 +35,7 @@ a = Analysis(
         'attrs',
         'charset_normalizer',
         'async_timeout',
-    ] + edge_tts_hiddenimports,
+    ] + edge_tts_hiddenimports + aiohttp_hiddenimports + tabulate_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
